@@ -1,0 +1,206 @@
+services:
+  # ---------- Infrastructure ----------
+  mongo:
+    image: mongo:7
+    container_name: qualora-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    ports:
+      - "27019:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./infra/mongo/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - qualora-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: qualora-redis
+    restart: unless-stopped
+    ports:
+      - "6381:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - qualora-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: qualora-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9004:9000"
+      - "9005:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - qualora-net
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: qualora-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_DEFAULT_BUCKET: ${MINIO_DEFAULT_BUCKET}
+    entrypoint: /bin/sh
+    command: /init-buckets.sh
+    volumes:
+      - ./infra/minio/init-buckets.sh:/init-buckets.sh:ro
+    networks:
+      - qualora-net
+    restart: "no"
+
+  # ---------- Application ----------
+  backend-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: qualora-backend-api
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./backend/firebase-service-account.json:/app/firebase-service-account.json:ro
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: '1.0'
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - qualora-net
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    shm_size: '2gb'
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 4g
+          cpus: '2.0'
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.worker.celery_app:celery_app", "inspect", "ping", "--timeout", "5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - qualora-net
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    container_name: qualora-beat
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["celery", "-A", "app.worker.celery_app:celery_app", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '0.25'
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - qualora-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runner
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8001
+        NEXT_PUBLIC_FIREBASE_API_KEY: AIzaSyCBxGKx2t5mTcxcLnmdTQw5dtaL8tnJEeA
+        NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: qualora-bd693.firebaseapp.com
+        NEXT_PUBLIC_FIREBASE_PROJECT_ID: qualora-bd693
+    container_name: qualora-frontend
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8001
+    depends_on:
+      backend-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - qualora-net
+
+volumes:
+  mongo_data:
+  redis_data:
+  minio_data:
+
+networks:
+  qualora-net:
+    driver: bridge

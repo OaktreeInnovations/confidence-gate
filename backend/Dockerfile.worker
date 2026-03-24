@@ -1,0 +1,23 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+
+RUN groupadd --gid 1000 qualora && \
+    useradd --uid 1000 --gid qualora --shell /bin/bash --create-home qualora
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    playwright install --with-deps chromium && \
+    chmod -R 755 /opt/playwright-browsers && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --chown=qualora:qualora . .
+
+USER qualora
+
+CMD ["celery", "-A", "app.worker.celery_app:celery_app", "worker", "--loglevel=info", "--queues=qualora.default"]
