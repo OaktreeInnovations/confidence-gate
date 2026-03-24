@@ -919,7 +919,7 @@ export default function TestRunDetailPage() {
                     <span className="text-sm font-medium">
                       {testRun.status === "queued"
                         ? "Waiting to start..."
-                        : `Running step ${completedSteps + 1} of ${testRun.total_steps}`}
+                        : `Running step ${testRun.current_step ?? completedSteps + 1} of ${testRun.total_steps}`}
                     </span>
                   </div>
                   <span className="text-xs tabular-nums text-muted-foreground">

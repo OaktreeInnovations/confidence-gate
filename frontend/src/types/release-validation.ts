@@ -23,6 +23,11 @@ export interface ReleaseValidation {
   confidence_grade: string | null;
   recommendation: string | null;
   report: ReleaseReport;
+  // V1/V2/V3 scoring metadata
+  score_version: string | null;
+  trend: "up" | "down" | "stable" | null;
+  risk_delta: number | null;
+  historical_confidence: number | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -47,6 +52,35 @@ export interface ReleaseReport {
   feature_risks?: FeatureRisk[];
   flaky_tests?: FlakyTest[];
   timing_anomalies?: TimingAnomaly[];
+  // Scoring metadata
+  score_version?: string;
+  base_score?: number;
+  adjusted_score?: number;
+  healing_penalty?: number;
+  instability_index?: number;
+  instability_penalty?: number;
+  instability_components?: { retry_rate: number; healing_rate: number; behavior_failure_rate: number; resolution_retry_rate: number };
+  coverage_score?: number;
+  coverage_penalty?: number;
+  risk_adjustment?: number;
+  high_risk_steps?: { step_number: number; risk_weight: number; detail: string }[];
+  ai_adjustment?: number;
+  ai_confidence?: number;
+  ai_insights?: string[];
+  risk_explanations?: string[];
+  predicted_failure_probability?: number;
+  calibration_confidence?: number;
+  score_confidence?: number;
+  data_quality?: "LOW" | "MEDIUM" | "HIGH";
+  freshness?: "HIGH" | "MEDIUM" | "LOW";
+  decayed_score?: number;
+  hours_since_run?: number;
+  trend?: string;
+  historical_confidence?: number;
+  risk_delta?: number;
+  trajectory?: { scores: number[]; labels: string[] };
+  anomalies?: { type: string; metric: string; severity: string; deviation: number; detail: string }[];
+  delta?: { score_delta: number | null; pass_rate_delta: number | null; reasons: string[]; has_previous: boolean };
   ai_summary?: {
     executive_summary: string;
     key_findings: string[];

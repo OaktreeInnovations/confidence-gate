@@ -1,16 +1,20 @@
-"""Release validation scoring engine.
+"""Release validation scoring engine — V1/V2 deterministic architecture.
 
-Computes a deterministic release confidence report from a batch of test runs.
-Analyzes execution stability, flakiness, timing anomalies, selector confidence,
-and behavior signals to produce a 0-100 score, A-F grade, and deploy/caution/block
-recommendation.
+V1: Five weighted signals (execution, flakiness, performance, selector, behavior)
+    plus a healing-dependency penalty. Decision thresholds: SAFE≥85, CAUTION≥60,
+    BLOCK<60.
+
+V2: Activates when execution_profiles contain sufficient historical data
+    (total_runs ≥ 3 for at least two test cases). Adds historical_stability (15%)
+    and trend_adjustment (10%) signals; V1 signal weights scale down proportionally.
+    Outputs trend direction and risk_delta vs historical norm.
 
 All functions use sync pymongo (Celery worker context).
 """
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 from bson import ObjectId
@@ -18,7 +22,7 @@ from pymongo.database import Database
 import structlog
 
 from app.telemetry.confidence_scorer import compute_run_confidence
-from app.telemetry.models import RunTelemetry, StepTelemetry
+from app.telemetry.models import RunTelemetry
 
 logger = structlog.get_logger(__name__)
 
@@ -32,7 +36,7 @@ logger = structlog.get_logger(__name__)
 class ReleaseSignal:
     """A scored signal contributing to the release confidence score."""
     name: str
-    category: str       # execution | flakiness | timing | selector | behavior
+    category: str       # execution | flakiness | timing | selector | behavior | historical | trend
     severity: str       # good | warning | critical
     score_contribution: float  # 0-100 weighted contribution
     detail: str
@@ -71,7 +75,7 @@ class RootCause:
 @dataclass
 class ReleaseReport:
     """Complete release validation report."""
-    confidence_score: int = 0           # 0-100
+    confidence_score: int = 0           # 0-100 final score
     confidence_grade: str = "F"
     recommendation: str = "block"       # deploy | caution | block
     recommendation_reasons: list[str] = field(default_factory=list)
@@ -84,8 +88,15 @@ class ReleaseReport:
     flaky_tests: list[dict] = field(default_factory=list)
     timing_anomalies: list[dict] = field(default_factory=list)
 
+    # Scoring metadata
+    score_version: str = "v1"           # v1 | v2 | v3
+    healing_penalty: float = 0.0        # points deducted for healing dependency
+    historical_confidence: int | None = None  # V2+: historical avg pass rate 0-100
+    trend: str = "stable"               # V2+: up | down | stable
+    risk_delta: int | None = None       # V2+: current_score - historical_score
+
     def to_dict(self) -> dict:
-        return {
+        d = {
             "confidence_score": self.confidence_score,
             "confidence_grade": self.confidence_grade,
             "recommendation": self.recommendation,
@@ -98,7 +109,15 @@ class ReleaseReport:
             "feature_risks": self.feature_risks,
             "flaky_tests": self.flaky_tests,
             "timing_anomalies": self.timing_anomalies,
+            "score_version": self.score_version,
+            "healing_penalty": round(self.healing_penalty, 1),
+            "trend": self.trend,
         }
+        if self.historical_confidence is not None:
+            d["historical_confidence"] = self.historical_confidence
+        if self.risk_delta is not None:
+            d["risk_delta"] = self.risk_delta
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -119,21 +138,21 @@ def _score_to_grade(score: int) -> str:
 
 
 def _score_to_recommendation(score: int, blockers: list[str]) -> tuple[str, list[str]]:
-    """Determine recommendation and reasons from score + blockers."""
+    """Determine recommendation and reasons — SAFE≥85, CAUTION≥60, BLOCK<60."""
     reasons: list[str] = []
 
     if blockers:
         reasons.extend(blockers)
 
-    if score >= 80 and not blockers:
-        reasons.append(f"Confidence score {score}/100 indicates stable execution")
+    if score >= 85 and not blockers:
+        reasons.append(f"Confidence score {score}/100 — execution is stable and ready to deploy")
         return "deploy", reasons
 
-    if score >= 50 and len(blockers) <= 1:
+    if score >= 60 and len(blockers) <= 1:
         reasons.append(f"Confidence score {score}/100 — review flagged signals before deploying")
         return "caution", reasons
 
-    reasons.append(f"Confidence score {score}/100 is below safe threshold")
+    reasons.append(f"Confidence score {score}/100 is below safe threshold (85)")
     return "block", reasons
 
 
@@ -159,14 +178,9 @@ def compute_release_report(
 ) -> ReleaseReport:
     """Compute a deterministic release confidence report for a batch.
 
-    Steps:
-    1. Query test_runs by batch_id → batch pass rate
-    2. Query execution_telemetry per run → per-run confidence
-    3. Query execution_profiles per test case → flake/timing/selector data
-    4. Query failure_graph for org → clusters, feature risks
-    5. Compute weighted signals
-    6. Detect blockers, determine recommendation
-    7. Rank root causes by impact
+    V1 (always): Five weighted signals + healing penalty.
+    V2 (when historical data available): Adds historical_stability and
+    trend_adjustment signals; redistributes weights.
     """
     org_oid = ObjectId(org_id)
     report = ReleaseReport()
@@ -198,7 +212,7 @@ def compute_release_report(
     }
 
     # Build per-run results
-    run_id_to_doc = {}
+    run_id_to_doc: dict[str, dict] = {}
     tc_ids_in_batch: set[str] = set()
     for r in runs:
         rid = str(r["_id"])
@@ -229,7 +243,6 @@ def compute_release_report(
                 conf = compute_run_confidence(run_tel)
                 overall = conf.get("overall", 0.0)
                 run_confidences.append(overall)
-                # Enrich per_run_results
                 for pr in report.per_run_results:
                     if pr["test_run_id"] == rid:
                         pr["confidence"] = overall
@@ -239,8 +252,6 @@ def compute_release_report(
                 run_confidences.append(0.0)
         else:
             run_confidences.append(0.5 if run_id_to_doc[rid].get("status") == "passed" else 0.0)
-
-    avg_run_confidence = sum(run_confidences) / len(run_confidences) if run_confidences else 0.0
 
     # --- 3. Execution profiles for test cases in batch ---
     profiles = {
@@ -266,7 +277,9 @@ def compute_release_report(
                 })
 
     max_flake_rate = max(flake_rates) if flake_rates else 0.0
-    avg_flake_rate = sum(flake_rates) / len(flake_rates) if flake_rates else 0.0
+    avg_flake_rate = sum(flake_rates) if flake_rates else 0.0
+    if flake_rates:
+        avg_flake_rate = sum(flake_rates) / len(flake_rates)
 
     # Timing anomalies
     timing_anomaly_count = 0
@@ -289,9 +302,7 @@ def compute_release_report(
                 })
 
     timing_anomaly_density = (
-        timing_anomaly_count / total_steps_checked
-        if total_steps_checked > 0
-        else 0.0
+        timing_anomaly_count / total_steps_checked if total_steps_checked > 0 else 0.0
     )
 
     # Selector confidence
@@ -308,7 +319,7 @@ def compute_release_report(
     avg_selector_confidence = (
         sum(selector_success_rates) / len(selector_success_rates)
         if selector_success_rates
-        else 1.0  # No selector data = assume stable
+        else 1.0
     )
 
     # Behavior confidence from telemetry
@@ -332,87 +343,207 @@ def compute_release_report(
     if graph_doc:
         report.feature_risks = graph_doc.get("feature_risks", [])
 
-    # --- 5. Compute weighted signals ---
-    signals: list[ReleaseSignal] = []
+    # --- 5. Healing dependency penalty ---
+    # High avg_attempts on step profiles means tests rely on retries/AI regeneration.
+    # Penalty = 0-10 points proportional to fraction of healing-dependent steps.
+    healing_dependent_steps = 0
+    total_steps_with_data = 0
+    for tc_id in tc_ids_in_batch:
+        profile = profiles.get(tc_id)
+        if not profile:
+            continue
+        for sp in profile.get("step_profiles", []):
+            total_observations = sp.get("total_observations", 0)
+            if total_observations < 2:
+                continue
+            total_steps_with_data += 1
+            avg_attempts = sp.get("avg_attempts", 1.0)
+            if avg_attempts > 1.5:
+                healing_dependent_steps += 1
 
-    # Signal 1: Execution stability (35%)
-    stability_raw = batch_pass_rate * 100
-    stability_weighted = 0.35 * stability_raw
+    healing_ratio = (
+        healing_dependent_steps / total_steps_with_data
+        if total_steps_with_data > 0
+        else 0.0
+    )
+    healing_penalty = min(10.0, healing_ratio * 20.0)
+    report.healing_penalty = healing_penalty
+
+    # --- 6. Check V2 historical data availability ---
+    # V2 activates when at least 1 test case has ≥3 historical runs in its profile
+    profiles_with_history = [
+        p for p in profiles.values()
+        if p.get("total_runs", 0) >= 3
+    ]
+    use_v2 = len(profiles_with_history) >= 1
+
+    # --- 7. Compute weighted signals ---
+    signals: list[ReleaseSignal] = []
     failed_tests = [
         r.get("test_case_title", "Unknown")
         for r in runs if r.get("status") in ("failed", "error")
     ]
-    signals.append(ReleaseSignal(
-        name="Execution Stability",
-        category="execution",
-        severity=_severity_from_value(batch_pass_rate, 0.9, 0.7),
-        score_contribution=stability_weighted,
-        detail=f"Batch pass rate: {batch_pass_rate:.0%} ({passed}/{total} tests passed)",
-        affected_tests=failed_tests,
-    ))
+    flaky_test_names = [ft.get("test_case_id", "") for ft in report.flaky_tests]
 
-    # Signal 2: Flakiness inverse (20%)
-    flake_inverse = max(0, 1.0 - max_flake_rate) * 100
-    flake_weighted = 0.20 * flake_inverse
-    flaky_test_names = [
-        ft.get("test_case_id", "") for ft in report.flaky_tests
-    ]
-    signals.append(ReleaseSignal(
-        name="Flakiness",
-        category="flakiness",
-        severity=_severity_from_value(1.0 - max_flake_rate, 0.8, 0.5),
-        score_contribution=flake_weighted,
-        detail=f"Max flake rate: {max_flake_rate:.0%}, avg: {avg_flake_rate:.0%} across {len(flake_rates)} test cases",
-        affected_tests=flaky_test_names,
-    ))
+    if use_v2:
+        # V2 weights: exec 25%, flake 15%, perf 10%, selector 10%, behavior 15%,
+        #             historical 15%, trend 10%
 
-    # Signal 3: Performance (15%)
-    perf_raw = max(0, (1.0 - timing_anomaly_density)) * 100
-    perf_weighted = 0.15 * perf_raw
-    signals.append(ReleaseSignal(
-        name="Performance",
-        category="timing",
-        severity=_severity_from_value(1.0 - timing_anomaly_density, 0.85, 0.6),
-        score_contribution=perf_weighted,
-        detail=f"{timing_anomaly_count} timing anomalies across {total_steps_checked} steps ({timing_anomaly_density:.0%})",
-        affected_tests=[a["test_case_id"] for a in report.timing_anomalies[:5]],
-    ))
+        signals.append(ReleaseSignal(
+            name="Execution Stability",
+            category="execution",
+            severity=_severity_from_value(batch_pass_rate, 0.9, 0.7),
+            score_contribution=0.25 * batch_pass_rate * 100,
+            detail=f"Batch pass rate: {batch_pass_rate:.0%} ({passed}/{total} tests passed)",
+            affected_tests=failed_tests,
+        ))
 
-    # Signal 4: Selector confidence (15%)
-    selector_raw = avg_selector_confidence * 100
-    selector_weighted = 0.15 * selector_raw
-    signals.append(ReleaseSignal(
-        name="Selector Confidence",
-        category="selector",
-        severity=_severity_from_value(avg_selector_confidence, 0.85, 0.6),
-        score_contribution=selector_weighted,
-        detail=f"Average selector success rate: {avg_selector_confidence:.0%}",
-    ))
+        signals.append(ReleaseSignal(
+            name="Flakiness",
+            category="flakiness",
+            severity=_severity_from_value(1.0 - max_flake_rate, 0.8, 0.5),
+            score_contribution=0.15 * max(0, 1.0 - max_flake_rate) * 100,
+            detail=f"Max flake rate: {max_flake_rate:.0%}, avg: {avg_flake_rate:.0%} across {len(flake_rates)} test cases",
+            affected_tests=flaky_test_names,
+        ))
 
-    # Signal 5: Behavior confidence (15%)
-    behavior_raw = behavior_confidence * 100
-    behavior_weighted = 0.15 * behavior_raw
-    signals.append(ReleaseSignal(
-        name="Behavior Confidence",
-        category="behavior",
-        severity=_severity_from_value(behavior_confidence, 0.9, 0.7),
-        score_contribution=behavior_weighted,
-        detail=f"Behavior verification success: {behavior_confidence:.0%} ({total_behavior_steps} steps checked)",
-    ))
+        signals.append(ReleaseSignal(
+            name="Performance",
+            category="timing",
+            severity=_severity_from_value(1.0 - timing_anomaly_density, 0.85, 0.6),
+            score_contribution=0.10 * max(0, 1.0 - timing_anomaly_density) * 100,
+            detail=f"{timing_anomaly_count} timing anomalies across {total_steps_checked} steps ({timing_anomaly_density:.0%})",
+            affected_tests=[a["test_case_id"] for a in report.timing_anomalies[:5]],
+        ))
+
+        signals.append(ReleaseSignal(
+            name="Selector Confidence",
+            category="selector",
+            severity=_severity_from_value(avg_selector_confidence, 0.85, 0.6),
+            score_contribution=0.10 * avg_selector_confidence * 100,
+            detail=f"Average selector success rate: {avg_selector_confidence:.0%}",
+        ))
+
+        signals.append(ReleaseSignal(
+            name="Behavior Confidence",
+            category="behavior",
+            severity=_severity_from_value(behavior_confidence, 0.9, 0.7),
+            score_contribution=0.15 * behavior_confidence * 100,
+            detail=f"Behavior verification success: {behavior_confidence:.0%} ({total_behavior_steps} steps checked)",
+        ))
+
+        # Historical stability signal (15%): avg pass_rate across profiles with history
+        historical_pass_rates = [p.get("pass_rate", 0.0) for p in profiles_with_history]
+        avg_historical_pass_rate = sum(historical_pass_rates) / len(historical_pass_rates)
+        report.historical_confidence = int(avg_historical_pass_rate * 100)
+
+        signals.append(ReleaseSignal(
+            name="Historical Stability",
+            category="historical",
+            severity=_severity_from_value(avg_historical_pass_rate, 0.85, 0.6),
+            score_contribution=0.15 * avg_historical_pass_rate * 100,
+            detail=f"Historical pass rate: {avg_historical_pass_rate:.0%} across {len(profiles_with_history)} test cases ({sum(p.get('total_runs', 0) for p in profiles_with_history)} total runs)",
+        ))
+
+        # Trend adjustment signal (10%): uses reliability_trend from profiles
+        # reliability_trend: positive = improving, negative = degrading (-1 to +1)
+        trend_values = [
+            p.get("reliability_trend", 0.0)
+            for p in profiles_with_history
+        ]
+        avg_trend = sum(trend_values) / len(trend_values) if trend_values else 0.0
+
+        # Normalize trend to 0-100 (50 = neutral/stable)
+        trend_raw = 50.0 + (avg_trend * 50.0)
+        trend_raw = max(0.0, min(100.0, trend_raw))
+        trend_contribution = 0.10 * trend_raw
+
+        if avg_trend > 0.1:
+            report.trend = "up"
+            trend_detail = f"Reliability improving (trend: +{avg_trend:.2f})"
+            trend_severity = "good"
+        elif avg_trend < -0.1:
+            report.trend = "down"
+            trend_detail = f"Reliability declining (trend: {avg_trend:.2f})"
+            trend_severity = "warning" if avg_trend > -0.3 else "critical"
+        else:
+            report.trend = "stable"
+            trend_detail = f"Reliability stable (trend: {avg_trend:.2f})"
+            trend_severity = "good"
+
+        signals.append(ReleaseSignal(
+            name="Reliability Trend",
+            category="trend",
+            severity=trend_severity,
+            score_contribution=trend_contribution,
+            detail=trend_detail,
+        ))
+
+        report.score_version = "v2"
+
+    else:
+        # V1 weights: exec 30%, flake 20%, perf 15%, selector 15%, behavior 20%
+
+        signals.append(ReleaseSignal(
+            name="Execution Stability",
+            category="execution",
+            severity=_severity_from_value(batch_pass_rate, 0.9, 0.7),
+            score_contribution=0.30 * batch_pass_rate * 100,
+            detail=f"Batch pass rate: {batch_pass_rate:.0%} ({passed}/{total} tests passed)",
+            affected_tests=failed_tests,
+        ))
+
+        signals.append(ReleaseSignal(
+            name="Flakiness",
+            category="flakiness",
+            severity=_severity_from_value(1.0 - max_flake_rate, 0.8, 0.5),
+            score_contribution=0.20 * max(0, 1.0 - max_flake_rate) * 100,
+            detail=f"Max flake rate: {max_flake_rate:.0%}, avg: {avg_flake_rate:.0%} across {len(flake_rates)} test cases",
+            affected_tests=flaky_test_names,
+        ))
+
+        signals.append(ReleaseSignal(
+            name="Performance",
+            category="timing",
+            severity=_severity_from_value(1.0 - timing_anomaly_density, 0.85, 0.6),
+            score_contribution=0.15 * max(0, 1.0 - timing_anomaly_density) * 100,
+            detail=f"{timing_anomaly_count} timing anomalies across {total_steps_checked} steps ({timing_anomaly_density:.0%})",
+            affected_tests=[a["test_case_id"] for a in report.timing_anomalies[:5]],
+        ))
+
+        signals.append(ReleaseSignal(
+            name="Selector Confidence",
+            category="selector",
+            severity=_severity_from_value(avg_selector_confidence, 0.85, 0.6),
+            score_contribution=0.15 * avg_selector_confidence * 100,
+            detail=f"Average selector success rate: {avg_selector_confidence:.0%}",
+        ))
+
+        signals.append(ReleaseSignal(
+            name="Behavior Confidence",
+            category="behavior",
+            severity=_severity_from_value(behavior_confidence, 0.9, 0.7),
+            score_contribution=0.20 * behavior_confidence * 100,
+            detail=f"Behavior verification success: {behavior_confidence:.0%} ({total_behavior_steps} steps checked)",
+        ))
+
+        report.score_version = "v1"
 
     report.signals = signals
     raw_score = sum(s.score_contribution for s in signals)
 
-    # --- 6. Blockers ---
-    blockers: list[str] = []
+    # Apply healing penalty
+    raw_score -= healing_penalty
 
-    if batch_pass_rate < 0.5:
-        blockers.append(f"Batch pass rate critically low: {batch_pass_rate:.0%}")
-        raw_score = min(raw_score, 30)
+    # --- 8. Blockers (hard caps) ---
+    blockers: list[str] = []
 
     if batch_pass_rate == 0:
         blockers.append("All tests failed — no confidence in release")
         raw_score = min(raw_score, 5)
+    elif batch_pass_rate < 0.5:
+        blockers.append(f"Batch pass rate critically low: {batch_pass_rate:.0%}")
+        raw_score = min(raw_score, 30)
 
     critical_failures = sum(1 for r in runs if r.get("status") == "error")
     if critical_failures > total * 0.3:
@@ -427,11 +558,15 @@ def compute_release_report(
     report.confidence_score = max(0, min(100, int(raw_score)))
     report.confidence_grade = _score_to_grade(report.confidence_score)
 
+    # V2: compute risk_delta vs historical norm
+    if use_v2 and report.historical_confidence is not None:
+        report.risk_delta = report.confidence_score - report.historical_confidence
+
     recommendation, reasons = _score_to_recommendation(report.confidence_score, blockers)
     report.recommendation = recommendation
     report.recommendation_reasons = reasons
 
-    # --- 7. Root causes ---
+    # --- 9. Root causes ---
     report.root_causes = _compute_root_causes(runs, telemetry_docs, profiles)
 
     logger.info(
@@ -441,9 +576,12 @@ def compute_release_report(
         score=report.confidence_score,
         grade=report.confidence_grade,
         recommendation=report.recommendation,
+        score_version=report.score_version,
+        healing_penalty=round(healing_penalty, 1),
+        trend=report.trend,
+        risk_delta=report.risk_delta,
         signals=len(report.signals),
         blockers=len(report.blockers),
-        root_causes=len(report.root_causes),
     )
 
     return report
@@ -459,12 +597,7 @@ def _compute_root_causes(
     telemetry_docs: dict[str, dict],
     profiles: dict[str, dict],
 ) -> list[RootCause]:
-    """Identify and rank root causes from batch failures.
-
-    Groups failure reasons across runs, scores by impact (breadth x frequency),
-    and returns the top 3.
-    """
-    # Collect failure reasons → affected tests and steps
+    """Identify and rank root causes from batch failures."""
     reason_data: dict[str, dict] = defaultdict(lambda: {
         "count": 0,
         "tests": set(),
@@ -486,17 +619,15 @@ def _compute_root_causes(
                         if not attempt.get("success", False):
                             reason = attempt.get("error_type", "unknown")
                             msg = attempt.get("error_message", "")
-                            key = reason
-                            reason_data[key]["count"] += 1
-                            reason_data[key]["tests"].add(tc_title)
-                            reason_data[key]["steps"].append({
+                            reason_data[reason]["count"] += 1
+                            reason_data[reason]["tests"].add(tc_title)
+                            reason_data[reason]["steps"].append({
                                 "test_case_title": tc_title,
                                 "step_number": step.get("step_number", 0),
                                 "action": step.get("action", "")[:80],
                                 "error_message": msg[:200],
                             })
         else:
-            # No telemetry — use run-level status
             reason_data["unknown"]["count"] += 1
             reason_data["unknown"]["tests"].add(tc_title)
 
@@ -505,7 +636,6 @@ def _compute_root_causes(
 
     total_tests = len(set(r.get("test_case_title", "") for r in runs))
 
-    # Score and rank
     scored: list[tuple[str, float, dict]] = []
     for reason, data in reason_data.items():
         breadth = len(data["tests"]) / max(total_tests, 1)
@@ -545,7 +675,6 @@ _REASON_DESCRIPTIONS = {
 
 
 def _humanize_reason(reason: str, data: dict) -> str:
-    """Generate a human-readable root cause description."""
     base = _REASON_DESCRIPTIONS.get(reason, f"Failure type: {reason}")
     test_count = len(data["tests"])
     occurrence_count = data["count"]

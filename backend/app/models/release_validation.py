@@ -38,6 +38,10 @@ class ReleaseValidation(BaseModel):
     confidence_grade: str | None = None
     recommendation: str | None = None
     report: dict = Field(default_factory=dict)
+    score_version: str | None = None
+    trend: str | None = None
+    risk_delta: int | None = None
+    historical_confidence: int | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None

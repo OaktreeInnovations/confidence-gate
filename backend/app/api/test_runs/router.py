@@ -79,6 +79,7 @@ class TestRunResponse(BaseModel):
     failed_steps: int
     error_message: str
     run_until_step: int
+    current_step: int | None = None
     intent_overrides: dict[str, str] = {}
     results: list[StepResultResponse]
     created_at: str
@@ -106,6 +107,7 @@ class TestRunResponse(BaseModel):
             failed_steps=tr.failed_steps,
             error_message=tr.error_message,
             run_until_step=tr.run_until_step,
+            current_step=tr.current_step,
             intent_overrides=tr.intent_overrides or {},
             results=[
                 StepResultResponse(

@@ -53,6 +53,10 @@ class ReleaseValidationResponse(BaseModel):
     confidence_grade: str | None
     recommendation: str | None
     report: dict
+    score_version: str | None = None
+    trend: str | None = None
+    risk_delta: int | None = None
+    historical_confidence: int | None = None
     created_at: str
     updated_at: str
     completed_at: str | None
@@ -77,6 +81,10 @@ class ReleaseValidationResponse(BaseModel):
             confidence_grade=doc.get("confidence_grade"),
             recommendation=doc.get("recommendation"),
             report=doc.get("report", {}),
+            score_version=doc.get("score_version"),
+            trend=doc.get("trend"),
+            risk_delta=doc.get("risk_delta"),
+            historical_confidence=doc.get("historical_confidence"),
             created_at=doc["created_at"].isoformat(),
             updated_at=doc["updated_at"].isoformat(),
             completed_at=doc["completed_at"].isoformat() if doc.get("completed_at") else None,

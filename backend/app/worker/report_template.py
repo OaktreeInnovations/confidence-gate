@@ -33,17 +33,23 @@ def render_report_html(
     Returns:
         Complete HTML document string.
     """
+    # Build per-step confidence lookup from telemetry
+    step_confidence: dict[int, dict] = {}
+    if telemetry:
+        for sc in telemetry.get("confidence", {}).get("per_step", []):
+            step_confidence[sc["step"]] = sc
+
     sections = [
         _css(),
         _header(test_run, test_case, org),
-        _executive_summary(test_run, user),
+        _executive_summary(test_run, user, telemetry),
         _test_case_details(test_case),
     ]
 
     if telemetry and telemetry.get("environment"):
         sections.append(_environment(telemetry["environment"]))
 
-    sections.append(_step_results(test_run, screenshots))
+    sections.append(_step_results(test_run, screenshots, step_confidence))
 
     if telemetry:
         sections.append(_execution_metrics(telemetry))
@@ -212,7 +218,7 @@ def _header(run: dict, tc: dict | None, org: dict | None) -> str:
 </div>"""
 
 
-def _executive_summary(run: dict, user: dict | None) -> str:
+def _executive_summary(run: dict, user: dict | None, telemetry: dict | None = None) -> str:
     total = run.get("total_steps", 0)
     passed = run.get("passed_steps", 0)
     failed = run.get("failed_steps", 0)
@@ -233,6 +239,35 @@ def _executive_summary(run: dict, user: dict | None) -> str:
 
     pass_width = round(passed / total * 100, 1) if total > 0 else 0
     fail_width = round((failed + errored) / total * 100, 1) if total > 0 else 0
+
+    # Confidence score from telemetry
+    confidence_html = ""
+    if telemetry:
+        conf = telemetry.get("confidence", {})
+        overall = conf.get("overall")
+        recommendation = conf.get("recommendation", "")
+        total_retries = telemetry.get("total_retries", 0)
+        if overall is not None:
+            conf_pct = round(overall * 100, 1)
+            conf_color = "#22c55e" if overall >= 0.85 else "#f59e0b" if overall >= 0.60 else "#ef4444"
+            rec_color = "#22c55e" if recommendation == "reliable" else "#f59e0b" if recommendation == "flaky" else "#ef4444"
+            confidence_html = f"""
+    <div style="margin-top:12px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;">
+        <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
+            <div style="text-align:center;">
+                <div style="font-size:22px;font-weight:700;color:{conf_color};">{conf_pct}%</div>
+                <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.4px;">AI Confidence</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:14px;font-weight:700;color:{rec_color};text-transform:uppercase;">{escape(recommendation)}</div>
+                <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.4px;">Verdict</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:18px;font-weight:700;">{total_retries}</div>
+                <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.4px;">Total Retries</div>
+            </div>
+        </div>
+    </div>"""
 
     return f"""
 <div class="section">
@@ -258,6 +293,7 @@ def _executive_summary(run: dict, user: dict | None) -> str:
     <div class="progress-bar">
         <div class="progress-fill progress-pass" style="width:{pass_width}%;display:inline-block;"></div><div class="progress-fill progress-fail" style="width:{fail_width}%;display:inline-block;"></div>
     </div>
+    {confidence_html}
     <dl class="kv" style="margin-top:12px;">
         <dt>Duration</dt><dd>{_fmt_duration(duration)}</dd>
         <dt>Triggered By</dt><dd>{triggered_by}</dd>
@@ -330,11 +366,12 @@ def _environment(env: dict) -> str:
 </div>"""
 
 
-def _step_results(run: dict, screenshots: dict[int, str]) -> str:
+def _step_results(run: dict, screenshots: dict[int, str], step_confidence: dict[int, dict] | None = None) -> str:
     results = run.get("results", [])
     if not results:
         return '<div class="section section-break"><h2>Step-by-Step Results</h2><p style="color:#9ca3af;">No step results available.</p></div>'
 
+    step_confidence = step_confidence or {}
     cards = []
     for r in results:
         step_num = r.get("step_number", 0)
@@ -362,6 +399,26 @@ def _step_results(run: dict, screenshots: dict[int, str]) -> str:
             <div class="step-screenshot">
                 <img src="{screenshots[step_num]}" alt="Step {step_num} screenshot" />
             </div>"""
+
+        # Per-step confidence + risk factors from telemetry
+        conf_html = ""
+        sc = step_confidence.get(step_num)
+        if sc:
+            conf_val = sc.get("confidence")
+            risk_factors = sc.get("risk_factors", [])
+            if conf_val is not None:
+                conf_pct = round(conf_val * 100, 1)
+                conf_color = "#22c55e" if conf_val >= 0.85 else "#f59e0b" if conf_val >= 0.60 else "#ef4444"
+                risk_html = ""
+                if risk_factors:
+                    items = "".join(f'<span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:3px;font-size:9.5px;margin-right:4px;">{escape(f)}</span>' for f in risk_factors)
+                    risk_html = f'<div style="margin-top:4px;">{items}</div>'
+                conf_html = f"""
+                <div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span style="font-size:10px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:0.3px;">Confidence:</span>
+                    <span style="font-weight:700;color:{conf_color};font-size:11px;">{conf_pct}%</span>
+                    {risk_html}
+                </div>"""
 
         # Meta info
         meta_parts = []
@@ -395,6 +452,7 @@ def _step_results(run: dict, screenshots: dict[int, str]) -> str:
                 </div>
                 {error_html}
                 {screenshot_html}
+                {conf_html}
                 {meta_html}
             </div>
         </div>""")
@@ -413,7 +471,21 @@ def _execution_metrics(tel: dict) -> str:
     total_retries = tel.get("total_retries", 0)
     flake_indicators = tel.get("flake_indicators", [])
 
+    # Build confidence lookup
+    per_step_conf: dict[int, float] = {}
+    for sc in tel.get("confidence", {}).get("per_step", []):
+        per_step_conf[sc["step"]] = sc.get("confidence", 0.0)
+
     # Summary metrics
+    overall_conf = tel.get("confidence", {}).get("overall")
+    conf_card = ""
+    if overall_conf is not None:
+        conf_color = "#22c55e" if overall_conf >= 0.85 else "#f59e0b" if overall_conf >= 0.60 else "#ef4444"
+        conf_card = f"""<div class="metric-card">
+            <div class="metric-value" style="color:{conf_color};">{round(overall_conf * 100, 1)}%</div>
+            <div class="metric-label">Run Confidence</div>
+        </div>"""
+
     metrics_html = f"""
     <div class="metrics-grid">
         <div class="metric-card">
@@ -428,14 +500,26 @@ def _execution_metrics(tel: dict) -> str:
             <div class="metric-value">{total_retries}</div>
             <div class="metric-label">Total Retries</div>
         </div>
+        {conf_card}
     </div>"""
 
-    # Per-step timing table
+    # Per-step timing table (with confidence column)
     if steps:
         rows = []
         for s in steps:
             sn = s.get("step_number", 0)
             timings = s.get("timings", {})
+            conf_val = per_step_conf.get(sn)
+            if conf_val is not None:
+                conf_color = "#22c55e" if conf_val >= 0.85 else "#f59e0b" if conf_val >= 0.60 else "#ef4444"
+                conf_cell = f'<span style="color:{conf_color};font-weight:600;">{round(conf_val * 100, 1)}%</span>'
+            else:
+                conf_cell = "—"
+            # Healing indicator
+            healing_used = any(
+                a.get("healing_attempted") for a in s.get("attempts", [])
+            )
+            heal_cell = '<span style="color:#f59e0b;">&#x2713;</span>' if healing_used else "—"
             rows.append(f"""<tr>
                 <td>{sn}</td>
                 <td>{_fmt_duration(timings.get('context_capture_ms', 0))}</td>
@@ -444,13 +528,15 @@ def _execution_metrics(tel: dict) -> str:
                 <td>{_fmt_duration(timings.get('verification_ms', 0))}</td>
                 <td><strong>{_fmt_duration(timings.get('total_ms', 0))}</strong></td>
                 <td>{s.get('total_attempts', 1)}</td>
+                <td>{conf_cell}</td>
+                <td>{heal_cell}</td>
             </tr>""")
 
         timing_table = f"""
         <h3>Per-Step Timing Breakdown</h3>
         <table>
             <thead><tr>
-                <th>Step</th><th>Context</th><th>AI Gen</th><th>Execution</th><th>Verify</th><th>Total</th><th>Attempts</th>
+                <th>Step</th><th>Context</th><th>AI Gen</th><th>Execution</th><th>Verify</th><th>Total</th><th>Attempts</th><th>Confidence</th><th>Healed</th>
             </tr></thead>
             <tbody>{''.join(rows)}</tbody>
         </table>"""

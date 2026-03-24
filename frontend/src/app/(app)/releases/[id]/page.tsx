@@ -8,7 +8,6 @@ import {
   validationStatusBadgeVariant,
   recommendationVariant,
   recommendationLabel,
-  gradeColor,
 } from "@/lib/release-utils";
 import { formatDuration } from "@/lib/test-run-utils";
 import { runStatusBadgeVariant } from "@/lib/test-run-utils";
@@ -33,12 +32,296 @@ import {
   ShieldAlert,
   ShieldCheck,
   Download,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Activity,
+  Zap,
+  Eye,
 } from "lucide-react";
 import type {
   ReleaseValidation,
   ReleaseValidationStatus,
 } from "@/types/release-validation";
 import type { TestRunStatus } from "@/types/test-run";
+
+// ─── Mini sparkline ──────────────────────────────────────────────────────────
+
+function Sparkline({ scores, labels }: { scores: number[]; labels: string[] }) {
+  if (scores.length < 2) return null;
+  const w = 200;
+  const h = 48;
+  const pad = 4;
+  const max = Math.max(...scores, 100);
+  const min = Math.min(...scores, 0);
+  const range = max - min || 1;
+  const pts = scores.map((s, i) => {
+    const x = pad + (i / (scores.length - 1)) * (w - pad * 2);
+    const y = h - pad - ((s - min) / range) * (h - pad * 2);
+    return `${x},${y}`;
+  });
+  const last = scores[scores.length - 1];
+  const prev = scores[scores.length - 2];
+  const color = last >= prev ? "#22c55e" : "#ef4444";
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-12" preserveAspectRatio="none">
+      <polyline
+        points={pts.join(" ")}
+        fill="none"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        opacity="0.8"
+      />
+      {scores.map((s, i) => {
+        const x = pad + (i / (scores.length - 1)) * (w - pad * 2);
+        const y = h - pad - ((s - min) / range) * (h - pad * 2);
+        return (
+          <circle key={i} cx={x} cy={y} r="2.5" fill={color} opacity="0.9">
+            <title>{labels[i] ? `${labels[i]}: ${s}` : `${s}`}</title>
+          </circle>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ─── Score Intelligence card ──────────────────────────────────────────────────
+
+function ScoreIntelligenceCard({
+  scoreVersion,
+  trend,
+  historicalConfidence,
+  riskDelta,
+  healingPenalty,
+  aiAdjustment,
+  instabilityIndex,
+  coverageScore,
+  baseScore,
+  finalScore,
+  dataQuality,
+  scoreConfidence,
+  freshness,
+  predictedFailureProbability,
+  trajectory,
+}: {
+  scoreVersion: string | null;
+  trend: "up" | "down" | "stable" | null;
+  historicalConfidence: number | null;
+  riskDelta: number | null;
+  healingPenalty?: number;
+  aiAdjustment?: number;
+  instabilityIndex?: number;
+  coverageScore?: number;
+  baseScore?: number;
+  finalScore?: number;
+  dataQuality?: string;
+  scoreConfidence?: number;
+  freshness?: string;
+  predictedFailureProbability?: number;
+  trajectory?: { scores: number[]; labels: string[] };
+}) {
+  const TrendIcon = trend === "up" ? TrendingUp : trend === "down" ? TrendingDown : Minus;
+  const trendColor =
+    trend === "up" ? "text-success" : trend === "down" ? "text-destructive" : "text-muted-foreground";
+  const riskDeltaColor =
+    riskDelta == null ? "" : riskDelta >= 0 ? "text-success" : "text-destructive";
+
+  const dqColor =
+    dataQuality === "HIGH"
+      ? "text-success"
+      : dataQuality === "LOW"
+      ? "text-destructive"
+      : "text-warning";
+
+  const freshnessColor =
+    freshness === "HIGH"
+      ? "text-success"
+      : freshness === "LOW"
+      ? "text-destructive"
+      : "text-warning";
+
+  const failProb = predictedFailureProbability;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Activity className="h-4 w-4 text-primary" />
+          Score Intelligence
+          {scoreVersion && (
+            <span className="ml-auto text-xs font-normal uppercase text-muted-foreground bg-muted px-2 py-0.5 rounded">
+              {scoreVersion}
+            </span>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Score breakdown row */}
+        {baseScore != null && finalScore != null && (
+          <div className="flex flex-wrap gap-x-6 gap-y-3">
+            <Stat label="Base Score" value={`${baseScore}/100`} />
+            {healingPenalty != null && healingPenalty > 0 && (
+              <Stat label="Healing Penalty" value={`-${healingPenalty} pts`} color="text-warning" />
+            )}
+            {instabilityIndex != null && instabilityIndex > 0 && (
+              <Stat label="Instability" value={`${instabilityIndex}/100`}
+                color={instabilityIndex > 40 ? "text-destructive" : instabilityIndex > 20 ? "text-warning" : "text-success"} />
+            )}
+            {coverageScore != null && (
+              <Stat label="Coverage" value={`${coverageScore}/100`}
+                color={coverageScore < 40 ? "text-destructive" : coverageScore < 60 ? "text-warning" : "text-success"} />
+            )}
+            {aiAdjustment != null && aiAdjustment !== 0 && (
+              <Stat label="AI Adjustment"
+                value={`${aiAdjustment > 0 ? "+" : ""}${aiAdjustment} pts`}
+                color={aiAdjustment > 0 ? "text-success" : "text-destructive"} />
+            )}
+            <Stat label="Final Score" value={`${finalScore}/100`} bold />
+          </div>
+        )}
+
+        {/* Failure probability + metadata row */}
+        <div className="flex flex-wrap gap-x-6 gap-y-3 border-t border-border pt-3">
+          {failProb != null && (
+            <Stat label="Failure Probability"
+              value={`${(failProb * 100).toFixed(0)}%`}
+              color={failProb > 0.3 ? "text-destructive" : failProb > 0.15 ? "text-warning" : "text-success"} />
+          )}
+          {dataQuality && (
+            <Stat label="Data Quality" value={dataQuality} color={dqColor} />
+          )}
+          {scoreConfidence != null && (
+            <Stat label="Score Trust" value={`${(scoreConfidence * 100).toFixed(0)}%`} />
+          )}
+          {freshness && (
+            <Stat label="Freshness" value={freshness} color={freshnessColor} />
+          )}
+          {trend && (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground uppercase tracking-wide">Trend</span>
+              <span className={`text-sm font-semibold flex items-center gap-1 ${trendColor}`}>
+                <TrendIcon className="h-3.5 w-3.5" />
+                {trend.charAt(0).toUpperCase() + trend.slice(1)}
+              </span>
+            </div>
+          )}
+          {historicalConfidence != null && (
+            <Stat label="Historical Avg" value={`${historicalConfidence}/100`} />
+          )}
+          {riskDelta != null && (
+            <Stat label="vs Historical"
+              value={`${riskDelta >= 0 ? "+" : ""}${riskDelta} pts`}
+              color={riskDeltaColor} />
+          )}
+        </div>
+
+        {/* Trajectory sparkline */}
+        {trajectory && trajectory.scores.length >= 2 && (
+          <div className="border-t border-border pt-3">
+            <p className="text-xs text-muted-foreground mb-2">Confidence Trajectory (last {trajectory.scores.length} releases)</p>
+            <Sparkline scores={trajectory.scores} labels={trajectory.labels} />
+            <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+              <span>{trajectory.scores[0]}</span>
+              <span>{trajectory.scores[trajectory.scores.length - 1]}</span>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function Stat({ label, value, color, bold }: { label: string; value: string; color?: string; bold?: boolean }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-xs text-muted-foreground uppercase tracking-wide">{label}</span>
+      <span className={`text-sm ${bold ? "font-bold" : "font-semibold"} ${color ?? ""}`}>{value}</span>
+    </div>
+  );
+}
+
+// ─── Delta card ───────────────────────────────────────────────────────────────
+
+function DeltaCard({ delta }: { delta: NonNullable<ReturnType<() => {
+  score_delta: number | null;
+  pass_rate_delta: number | null;
+  reasons: string[];
+  has_previous: boolean;
+}>> }) {
+  if (!delta.has_previous) return null;
+  const scoreColor =
+    delta.score_delta == null ? ""
+    : delta.score_delta > 0 ? "text-success"
+    : delta.score_delta < 0 ? "text-destructive"
+    : "text-muted-foreground";
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Zap className="h-4 w-4 text-primary" />
+          Change from Previous Release
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap gap-6">
+          {delta.score_delta != null && (
+            <Stat label="Score Delta"
+              value={`${delta.score_delta >= 0 ? "+" : ""}${delta.score_delta} pts`}
+              color={scoreColor} />
+          )}
+          {delta.pass_rate_delta != null && (
+            <Stat label="Pass Rate Delta"
+              value={`${delta.pass_rate_delta >= 0 ? "+" : ""}${(delta.pass_rate_delta * 100).toFixed(0)}%`}
+              color={delta.pass_rate_delta >= 0 ? "text-success" : "text-destructive"} />
+          )}
+        </div>
+        {delta.reasons.length > 0 && (
+          <ul className="space-y-1">
+            {delta.reasons.map((r, i) => (
+              <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                <span className="mt-1 h-1.5 w-1.5 rounded-full bg-muted-foreground flex-shrink-0" />
+                {r}
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Anomalies card ───────────────────────────────────────────────────────────
+
+function AnomaliesCard({ anomalies }: { anomalies: { type: string; metric: string; severity: string; deviation: number; detail: string }[] }) {
+  if (!anomalies.length) return null;
+  return (
+    <Card className="border-warning/30">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2 text-warning">
+          <Eye className="h-4 w-4" />
+          Anomalies Detected
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ul className="space-y-2">
+          {anomalies.map((a, i) => (
+            <li key={i} className="flex items-start gap-2 text-sm">
+              <Badge variant={a.severity === "high" ? "destructive" : "warning"} className="text-[10px] mt-0.5 flex-shrink-0">
+                {a.severity}
+              </Badge>
+              <span className="text-muted-foreground">{a.detail}</span>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function ReleaseDetailPage() {
   const params = useParams();
@@ -63,18 +346,15 @@ export default function ReleaseDetailPage() {
     fetchValidation();
   }, [fetchValidation]);
 
-  // Poll while active
   useEffect(() => {
     if (!validation) return;
     const isActive =
       validation.status === "running" ||
       validation.status === "computing" ||
       validation.status === "pending";
-
     if (isActive) {
       intervalRef.current = setInterval(fetchValidation, 3000);
     }
-
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
@@ -137,7 +417,7 @@ export default function ReleaseDetailPage() {
         </Button>
       </div>
 
-      {/* Print header — only visible when printing */}
+      {/* Print header */}
       <div className="hidden print:block mb-6">
         <h1 className="text-2xl font-bold">{v.title || v.project_name || "Release Validation"}</h1>
         <p className="text-sm text-gray-500 mt-1">
@@ -166,11 +446,7 @@ export default function ReleaseDetailPage() {
                   )}
                 </div>
                 <Badge
-                  variant={
-                    validationStatusBadgeVariant[
-                      v.status as ReleaseValidationStatus
-                    ] ?? "muted"
-                  }
+                  variant={validationStatusBadgeVariant[v.status as ReleaseValidationStatus] ?? "muted"}
                   className="gap-1.5"
                 >
                   {isActive && <Loader2 className="h-3 w-3 animate-spin" />}
@@ -198,10 +474,45 @@ export default function ReleaseDetailPage() {
                   {recommendationLabel(v.recommendation)}
                 </div>
               )}
+
+              {/* Failure probability inline */}
+              {isCompleted && report?.predicted_failure_probability != null && (
+                <p className="text-xs text-muted-foreground">
+                  Predicted production failure:{" "}
+                  <span className={
+                    report.predicted_failure_probability > 0.3 ? "text-destructive font-semibold" :
+                    report.predicted_failure_probability > 0.15 ? "text-warning font-semibold" :
+                    "text-success font-semibold"
+                  }>
+                    {(report.predicted_failure_probability * 100).toFixed(0)}%
+                  </span>
+                </p>
+              )}
             </div>
           </div>
         </CardContent>
       </Card>
+
+      {/* Score Intelligence */}
+      {isCompleted && (
+        <ScoreIntelligenceCard
+          scoreVersion={v.score_version}
+          trend={v.trend}
+          historicalConfidence={v.historical_confidence}
+          riskDelta={v.risk_delta}
+          healingPenalty={report?.healing_penalty}
+          aiAdjustment={report?.ai_adjustment}
+          instabilityIndex={report?.instability_index}
+          coverageScore={report?.coverage_score}
+          baseScore={report?.base_score}
+          finalScore={v.confidence_score ?? undefined}
+          dataQuality={report?.data_quality}
+          scoreConfidence={report?.score_confidence}
+          freshness={report?.freshness}
+          predictedFailureProbability={report?.predicted_failure_probability}
+          trajectory={report?.trajectory}
+        />
+      )}
 
       {/* Progress section */}
       {isActive && (
@@ -234,6 +545,16 @@ export default function ReleaseDetailPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Delta from previous release */}
+      {isCompleted && report?.delta && (
+        <DeltaCard delta={report.delta as any} />
+      )}
+
+      {/* Anomalies */}
+      {isCompleted && report?.anomalies && report.anomalies.length > 0 && (
+        <AnomaliesCard anomalies={report.anomalies} />
       )}
 
       {/* Blockers */}
@@ -360,9 +681,7 @@ export default function ReleaseDetailPage() {
                     </TableCell>
                     <TableCell>
                       <Badge
-                        variant={
-                          runStatusBadgeVariant[run.status as TestRunStatus] ?? "muted"
-                        }
+                        variant={runStatusBadgeVariant[run.status as TestRunStatus] ?? "muted"}
                       >
                         {run.status}
                       </Badge>
@@ -383,7 +702,51 @@ export default function ReleaseDetailPage() {
         </Card>
       )}
 
-      {/* AI Summary */}
+      {/* AI Insights */}
+      {isCompleted && (report?.ai_insights?.length || report?.risk_explanations?.length) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              AI Risk Analysis
+              {report.ai_confidence != null && report.ai_confidence > 0 && (
+                <span className="text-xs font-normal text-muted-foreground">
+                  ({(report.ai_confidence * 100).toFixed(0)}% confidence)
+                </span>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {report.ai_insights && report.ai_insights.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1">Insights</p>
+                <ul className="space-y-1">
+                  {report.ai_insights.map((ins, i) => (
+                    <li key={i} className="text-sm flex items-start gap-2">
+                      <span className="mt-1 h-1.5 w-1.5 rounded-full bg-primary flex-shrink-0" />
+                      {ins}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {report.risk_explanations && report.risk_explanations.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1">Risk Explanations</p>
+                <ul className="space-y-1">
+                  {report.risk_explanations.map((r, i) => (
+                    <li key={i} className="text-sm flex items-start gap-2 text-warning">
+                      <span className="mt-1 h-1.5 w-1.5 rounded-full bg-warning flex-shrink-0" />
+                      {r}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* AI Narrative Summary */}
       {isCompleted && report?.ai_summary && (
         <Card>
           <CardHeader>

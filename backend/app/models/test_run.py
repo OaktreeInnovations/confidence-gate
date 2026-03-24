@@ -55,6 +55,7 @@ class TestRun(BaseModel):
     failed_steps: int = 0
     error_message: str = ""
     run_until_step: int = 0  # 0 = run all steps; N = run steps 1..N only
+    current_step: int | None = None  # step currently executing (written before execution begins)
     intent_overrides: dict[str, str] = Field(default_factory=dict)  # step_number (str) → intent JSON
     results: list[StepResult] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

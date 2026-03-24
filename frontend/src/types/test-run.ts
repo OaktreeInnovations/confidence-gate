@@ -34,6 +34,7 @@ export interface TestRun {
   error_message: string;
   run_until_step: number;
   intent_overrides: Record<string, string>;
+  current_step: number | null;
   results: StepResult[];
   created_at: string;
   updated_at: string;
