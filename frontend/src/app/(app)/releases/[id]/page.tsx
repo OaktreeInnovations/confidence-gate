@@ -13,6 +13,7 @@ import {
 import { formatDuration } from "@/lib/test-run-utils";
 import { runStatusBadgeVariant } from "@/lib/test-run-utils";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -31,6 +32,7 @@ import {
   CheckCircle2,
   ShieldAlert,
   ShieldCheck,
+  Download,
 } from "lucide-react";
 import type {
   ReleaseValidation,
@@ -113,13 +115,36 @@ export default function ReleaseDetailPage() {
 
   return (
     <div className="space-y-6">
-      <Link
-        href="/releases"
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        Back to Releases
-      </Link>
+      <div className="flex items-center justify-between print:hidden">
+        <Link
+          href="/releases"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to Releases
+        </Link>
+        <Button variant="outline" size="sm" onClick={() => {
+          const project = v.project_name || "Release";
+          const title = v.title ? `${project} ${v.title}` : project;
+          const date = new Date().toISOString().slice(0, 10);
+          const prev = document.title;
+          document.title = `${title} ${date}`;
+          window.print();
+          document.title = prev;
+        }}>
+          <Download className="h-4 w-4" />
+          Download PDF
+        </Button>
+      </div>
+
+      {/* Print header — only visible when printing */}
+      <div className="hidden print:block mb-6">
+        <h1 className="text-2xl font-bold">{v.title || v.project_name || "Release Validation"}</h1>
+        <p className="text-sm text-gray-500 mt-1">
+          {v.project_name} &middot; {new Date(v.created_at).toLocaleString()}
+          {v.completed_at && ` · Completed ${new Date(v.completed_at).toLocaleString()}`}
+        </p>
+      </div>
 
       {/* Header Card */}
       <Card>
@@ -132,9 +157,14 @@ export default function ReleaseDetailPage() {
             />
             <div className="flex-1 space-y-2">
               <div className="flex items-center gap-3">
-                <h1 className="text-xl font-bold tracking-tight">
-                  {v.project_name || "Release Validation"}
-                </h1>
+                <div>
+                  <h1 className="text-xl font-bold tracking-tight">
+                    {v.project_name || "Release Validation"}
+                  </h1>
+                  {v.title && (
+                    <p className="text-sm text-muted-foreground mt-0.5">{v.title}</p>
+                  )}
+                </div>
                 <Badge
                   variant={
                     validationStatusBadgeVariant[

@@ -72,3 +72,50 @@
 .animate-progress-pulse {
   animation: progress-pulse 2s ease-in-out infinite;
 }
+
+@media print {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+
+  /* Override dark-theme CSS variables to light-mode equivalents */
+  :root {
+    --color-background: #ffffff;
+    --color-foreground: #0f172a;
+    --color-card: #ffffff;
+    --color-card-foreground: #0f172a;
+    --color-muted: #f1f5f9;
+    --color-muted-foreground: #64748b;
+    --color-border: #e2e8f0;
+    --color-primary: oklch(0.58 0.17 55);
+    --color-success: oklch(0.5 0.15 145);
+    --color-warning: oklch(0.6 0.16 70);
+    --color-destructive: oklch(0.5 0.2 25);
+    --color-sidebar: #ffffff;
+  }
+
+  nav, header, footer { display: none !important; }
+
+  /* Remove scroll/height constraints so full content prints */
+  html, body { height: auto !important; overflow: visible !important; }
+  .flex.h-screen { height: auto !important; display: block !important; }
+  main { overflow: visible !important; height: auto !important; }
+
+  * { box-shadow: none !important; }
+
+  /* Cards */
+  .card, [class*="Card"] {
+    break-inside: auto;
+    page-break-inside: auto;
+    border: 1px solid #e2e8f0 !important;
+    margin-bottom: 12px;
+  }
+  [class*="CardHeader"] { break-after: avoid; page-break-after: avoid; }
+
+  /* Bullet dots and colored elements */
+  li > span[class*="rounded-full"],
+  [class*="bg-success"], [class*="bg-warning"], [class*="bg-destructive"],
+  [class*="bg-primary"] {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

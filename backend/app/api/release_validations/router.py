@@ -29,6 +29,7 @@ router = APIRouter(prefix="/api/release-validations", tags=["release-validations
 
 class CreateReleaseValidationRequest(BaseModel):
     project_id: str
+    title: str = ""
     prd_text: str = ""
     notes: str = ""
     test_case_ids: list[str] | None = None
@@ -39,6 +40,7 @@ class ReleaseValidationResponse(BaseModel):
     org_id: str
     project_id: str
     project_name: str
+    title: str
     status: str
     batch_id: str
     total_runs: int
@@ -62,6 +64,7 @@ class ReleaseValidationResponse(BaseModel):
             org_id=str(doc["org_id"]),
             project_id=str(doc["project_id"]),
             project_name=doc.get("project_name", ""),
+            title=doc.get("title", ""),
             status=doc.get("status", "pending"),
             batch_id=doc.get("batch_id", ""),
             total_runs=doc.get("total_runs", 0),
@@ -172,6 +175,7 @@ async def create_release_validation(
         org_id=org_id,
         project_id=project_oid,
         project_name=project_name,
+        title=body.title,
         triggered_by=current_user.id,
         status=ReleaseValidationStatus.RUNNING,
         batch_id=batch_id,

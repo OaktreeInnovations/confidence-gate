@@ -598,16 +598,23 @@ async def rerun_step(
                 {"$set": {"steps": updated_steps, "updated_at": datetime.now(timezone.utc)}},
             )
 
-    # Mark as running and dispatch
-    await db.test_runs.update_one(
-        {"_id": oid},
-        {"$set": {"status": "running", "updated_at": datetime.now(timezone.utc)}},
-    )
-    tr.status = TestRunStatus.RUNNING
+    # Revoke any existing celery task before dispatching a new one
+    if tr.celery_task_id:
+        try:
+            from app.worker.celery_app import celery_app as _celery
+            _celery.control.revoke(tr.celery_task_id, terminate=True, signal="SIGTERM")
+        except Exception:
+            pass
 
-    rerun_step_task.delay(
+    # Mark as running and dispatch
+    new_task = rerun_step_task.delay(
         test_run_id, body.step_number, body.override_intent or None,
     )
+    await db.test_runs.update_one(
+        {"_id": oid},
+        {"$set": {"status": "running", "celery_task_id": new_task.id, "updated_at": datetime.now(timezone.utc)}},
+    )
+    tr.status = TestRunStatus.RUNNING
 
     logger.info(
         "test_run.rerun_step",

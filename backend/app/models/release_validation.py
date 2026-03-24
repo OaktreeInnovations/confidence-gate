@@ -24,6 +24,7 @@ class ReleaseValidation(BaseModel):
     org_id: ObjectId
     project_id: ObjectId
     project_name: str = ""
+    title: str = ""
     triggered_by: ObjectId
     status: ReleaseValidationStatus = ReleaseValidationStatus.PENDING
     batch_id: str = ""

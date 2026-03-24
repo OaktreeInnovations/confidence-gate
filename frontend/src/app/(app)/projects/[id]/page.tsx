@@ -58,6 +58,7 @@ export default function ProjectDetailPage() {
   const [runningValidation, setRunningValidation] = useState(false);
   const [latestValidation, setLatestValidation] = useState<ReleaseValidation | null>(null);
   const [showValidationDialog, setShowValidationDialog] = useState(false);
+  const [validationTitle, setValidationTitle] = useState("");
   const [validationPrd, setValidationPrd] = useState("");
   const [validationNotes, setValidationNotes] = useState("");
   const [validationTcIds, setValidationTcIds] = useState<Set<string>>(new Set());
@@ -232,6 +233,7 @@ export default function ProjectDetailPage() {
     } else {
       setValidationTcIds(new Set(tcData?.items.map((tc) => tc.id) ?? []));
     }
+    setValidationTitle("");
     setValidationPrd("");
     setValidationNotes("");
     setShowValidationDialog(true);
@@ -266,6 +268,7 @@ export default function ProjectDetailPage() {
     if (tcData && validationTcIds.size < tcData.total) {
       body.test_case_ids = [...validationTcIds];
     }
+    if (validationTitle.trim()) body.title = validationTitle.trim();
     if (validationPrd.trim()) body.prd_text = validationPrd.trim();
     if (validationNotes.trim()) body.notes = validationNotes.trim();
 
@@ -642,6 +645,19 @@ export default function ProjectDetailPage() {
             </div>
 
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+              {/* Title */}
+              <div className="space-y-2">
+                <Label>
+                  Release Title{" "}
+                  <span className="font-normal text-muted-foreground">(optional)</span>
+                </Label>
+                <Input
+                  value={validationTitle}
+                  onChange={(e) => setValidationTitle(e.target.value)}
+                  placeholder="e.g., v2.4.0 Production Release"
+                />
+              </div>
+
               {/* Test case selection */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">

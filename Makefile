@@ -1,9 +1,12 @@
-.PHONY: up down logs health ps build
+.PHONY: up down down-all logs health ps build
 
 up:
 	docker compose up -d --build
 
 down:
+	docker compose down
+
+down-all:
 	docker compose down -v
 
 logs:

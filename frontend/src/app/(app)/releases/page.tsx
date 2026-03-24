@@ -97,6 +97,7 @@ export default function ReleasesPage() {
             <TableHeader>
               <TableRow className="bg-muted/30">
                 <TableHead>Project</TableHead>
+                <TableHead>Title</TableHead>
                 <TableHead className="w-[80px] text-center">Score</TableHead>
                 <TableHead className="w-[60px] text-center">Grade</TableHead>
                 <TableHead className="w-[160px]">Recommendation</TableHead>
@@ -117,6 +118,9 @@ export default function ReleasesPage() {
                   >
                     <TableCell className="font-medium">
                       {v.project_name || "Unknown Project"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      {v.title || ""}
                     </TableCell>
                     <TableCell className="text-center">
                       {v.confidence_score != null ? (

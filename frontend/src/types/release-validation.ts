@@ -10,6 +10,7 @@ export interface ReleaseValidation {
   org_id: string;
   project_id: string;
   project_name: string;
+  title: string;
   status: ReleaseValidationStatus;
   batch_id: string;
   total_runs: number;

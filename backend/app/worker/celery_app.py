@@ -23,6 +23,8 @@ celery_app.conf.update(
     task_default_queue="qualora.default",
     worker_prefetch_multiplier=1,
     worker_concurrency=1,
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
     task_soft_time_limit=1800,
     task_time_limit=1920,
     include=[
