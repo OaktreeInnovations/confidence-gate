@@ -5,7 +5,7 @@ Pipeline:
   2. Instability penalty (retries, healing, behavior failures)
   3. Coverage penalty (shallow test depth)
   4. Risk adjustment (high-risk step outcomes)
-  5. Bounded AI adjustment ±5 (pattern detection)
+  5. AI adjustment: ±5 (no PRD) or -20 to +5 (PRD provided — gap analysis)
   6. Outcome calibration (predicted failure probability)
   7. Meta-confidence (score trustworthiness)
   8. Anomaly detection
@@ -144,8 +144,9 @@ def compute_final_score(
         except Exception as e:
             logger.warning("final_score.ai_error", error=str(e)[:200])
 
-    ai_adjustment = int(ai_result.get("ai_adjustment", 0))
-    final_score = max(0, min(100, int(adjusted) + ai_adjustment))
+    ai_adjustment = ai_result.get("ai_adjustment", 0)
+    # ai_adjustment can be -20 to +5 when PRD is provided; clamp final to 0-100
+    final_score = max(0, min(100, int(adjusted) + int(ai_adjustment)))
 
     # Update grade and decision with final score
     from app.intelligence.release_scorer import _score_to_grade, _score_to_recommendation
