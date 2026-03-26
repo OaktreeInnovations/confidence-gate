@@ -47,7 +47,7 @@ from app.worker.post_action_verify import (
 )
 from app.worker.selector_engine import resolve_target, ResolvedTarget
 from app.worker.selector_resilience import SelectorStrategy
-from app.worker.stability_wrappers import _remaining_ms, safe_click, safe_fill, safe_goto, safe_select
+from app.worker.stability_wrappers import _budget_sleep, _remaining_ms, safe_click, safe_fill, safe_goto, safe_select
 from app.worker.component_helpers import resolve_single
 from app.worker.component_registry import component_registry
 from app.worker.state_awareness import is_action_already_satisfied
@@ -117,6 +117,8 @@ def execute_intent(
     all_behavior_signals: list[str] = []
     total_mutation_count = 0
     any_significant_mutation = False
+    any_disambiguation_used = False
+    last_disambiguation_layer = ""
 
     for i, action in enumerate(intent.actions):
         elapsed_ms = int((time.monotonic() - step_start) * 1000)
@@ -364,6 +366,12 @@ def execute_intent(
                     all_behavior_signals.append(sig)
         total_interaction_attempts += result.get("interaction_attempts", 1)
 
+        # Track disambiguation usage
+        sel_info = result.get("selector_info") or {}
+        if sel_info.get("disambiguation"):
+            any_disambiguation_used = True
+            last_disambiguation_layer = sel_info.get("disambiguation_layer", "") or last_disambiguation_layer
+
         # Track mutation data
         mut = result.get("mutation_summary")
         if mut is not None:
@@ -443,7 +451,7 @@ def execute_intent(
                                 link.scrollIntoView({block: 'center'});
                                 link.click();
                             }""")
-                            _time.sleep(0.5)
+                            _budget_sleep(0.5, "link_nav_js_click_settle")
                             if page.url != pre_url:
                                 logger.info(
                                     "intent_executor.link_nav_retry_success",
@@ -465,7 +473,7 @@ def execute_intent(
                     else:
                         try:
                             page.evaluate(f"() => window.location.href = '{retry_href}'")
-                            _time.sleep(1.0)
+                            _budget_sleep(1.0, "link_nav_href_settle")
                             if page.url != pre_url:
                                 logger.info(
                                     "intent_executor.link_nav_retry_success",
@@ -496,6 +504,8 @@ def execute_intent(
         "behavior_signals": all_behavior_signals,
         "mutation_total": total_mutation_count,
         "mutation_significant": any_significant_mutation,
+        "disambiguation_used": any_disambiguation_used,
+        "disambiguation_layer": last_disambiguation_layer,
     }
     return True, summary, selectors_used, stability_metrics, last_action_selector
 
@@ -964,7 +974,7 @@ def _execute_single_action(
     # so the post-action snapshot reflects the final state, not an intermediate one.
     if page_snapshot is not None:
         try:
-            wait_for_dom_stable(page, timeout_ms=1500, settle_ms=150)
+            wait_for_dom_stable(page, timeout_ms=1500, settle_ms=300)
         except Exception:
             pass
 

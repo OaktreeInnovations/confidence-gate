@@ -27,7 +27,7 @@ from app.worker.component_helpers import resolve_single
 from app.worker.evidence_collector import EvidenceCollector, upload_evidence_bundle
 from app.worker.intent_schema import EXECUTION_MODE_CONFIG, ExecutionMode, StepIntent
 from app.worker.page_stability import wait_for_page_ready
-from app.worker.stability_wrappers import set_execution_deadline
+from app.worker.stability_wrappers import _budget_sleep, set_execution_deadline
 
 if TYPE_CHECKING:
     from openai import OpenAI
@@ -323,14 +323,15 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
 Or if the expected result is NOT met:
 {"status": "failed", "actual": "description of what is actually visible instead"}
 
-IMPORTANT — Be LENIENT when verifying:
+IMPORTANT — Verification rules:
 - ONLY evaluate whether the EXPECTED RESULT is met. Do NOT check whether the action's target element is still visible — after a click or navigation, the page state changes and the original element may no longer exist.
 - If the expected result says "page displays X" and you can see X anywhere on the page, mark as PASSED.
 - If the page shows the right content but with minor differences (different wording, extra elements, slightly different layout), mark as PASSED.
 - If the action was "navigate to X" or "click X" and the page shows content related to X, mark as PASSED.
-- If the page shows a loading spinner, "Loading...", "Verifying...", or similar transitional state, mark as PASSED — the action was executed and the page is processing.
+- If the page shows a loading spinner, "Loading...", "Verifying...", or similar transitional state, respond with {"status": "inconclusive", "actual": "Page is in a loading/transitional state — outcome not yet determined"}.
 - Only mark as FAILED if the page clearly shows something COMPLETELY DIFFERENT from what was expected (e.g., an error page, still on the previous page with no change, or entirely wrong content).
-- When in doubt, lean toward PASSED.
+- Only mark as PASSED if the expected result is clearly and definitively met.
+- If uncertain, mark as "inconclusive" rather than guessing.
 
 Be precise and factual. Describe only what you see."""
 
@@ -887,15 +888,37 @@ def execute_step(
     # Resolve ${key} template references from test_data
     _resolve_templates(intent, test_data)
 
-    # Pre-validate intent targets against current page (skip for cached intents)
-    if not is_cached and ai_client is not None and gate.can_call("intent_regen"):
+    # Pre-validate intent targets against current page.
+    # For cached intents, also run this check — if the primary target is
+    # missing from the page the cache entry is stale (UI changed since it
+    # was written) and we must regenerate rather than execute blindly.
+    _pre_validate_regen_reason = "pre_validate_failed" if not is_cached else "cached_intent_stale"
+    if ai_client is not None and gate.can_call("intent_regen"):
         validation_feedback = _pre_validate_intent(intent, page_context, page=page)
         if validation_feedback:
-            logger.warning(
-                "structured.pre_validate_failed",
-                step=step_number,
-                feedback=validation_feedback[:300],
-            )
+            if is_cached:
+                logger.warning(
+                    "structured.cached_intent_stale",
+                    step=step_number,
+                    feedback=validation_feedback[:300],
+                )
+                # Invalidate this cache entry so it isn't reused next run
+                try:
+                    from app.intelligence.code_reuse import invalidate_code_cache
+                    invalidate_code_cache(
+                        db=db,
+                        test_case_id=test_case_id,
+                        step_number=step_number,
+                    )
+                except Exception:
+                    pass  # Non-fatal; stale cache will be overwritten on next successful run
+                is_cached = False  # Treat remainder of this step as non-cached
+            else:
+                logger.warning(
+                    "structured.pre_validate_failed",
+                    step=step_number,
+                    feedback=validation_feedback[:300],
+                )
             # Regenerate with feedback about missing targets
             try:
                 t_regen = time.monotonic()
@@ -912,12 +935,13 @@ def execute_step(
                 gate.record_call("intent_regen", model, p_tok + c_tok)
                 regen_ms = int((time.monotonic() - t_regen) * 1000)
                 if tel:
-                    tel.set_regeneration_reason("pre_validate_failed")
+                    tel.set_regeneration_reason(_pre_validate_regen_reason)
                     tel.record_ai_call("intent_regen", model, regen_ms, p_tok, c_tok)
                 logger.info(
                     "structured.pre_validate_regen",
                     step=step_number,
                     latency_ms=regen_ms,
+                    was_cached=is_cached,
                 )
             except Exception as e:
                 logger.warning(
@@ -925,7 +949,7 @@ def execute_step(
                     step=step_number,
                     error=str(e)[:200],
                 )
-                # Continue with original intent — execution retry loop may fix it
+                # Continue with current intent — execution retry loop may fix it
 
     # Scale wait budget for multi-action intents (dropdowns, wizards, sidebar nav)
     action_count = len(intent.actions) if intent else 1
@@ -1007,6 +1031,9 @@ def execute_step(
                 tel.record_phase("post_exec_stability", post_stability["total_ms"])
 
             last_error = None
+            _behavior_failures_now = stability_metrics.get("behavior_failures", 0)
+            _behavior_signals_now = stability_metrics.get("behavior_signals") or []
+
             if tel:
                 # Record stability metrics BEFORE record_attempt so they
                 # attach to this attempt's ExecutionAttempt record
@@ -1015,10 +1042,10 @@ def execute_step(
                     guard_failures=stability_metrics.get("guard_failures"),
                     post_action_verified=stability_metrics.get("post_action_verified", True),
                     post_action_method=stability_metrics.get("post_action_method", ""),
-                    behavior_failures=stability_metrics.get("behavior_failures", 0),
+                    behavior_failures=_behavior_failures_now,
                     interaction_attempts=stability_metrics.get("interaction_attempts", 0),
                     resolution_retries=stability_metrics.get("resolution_retries", 0),
-                    behavior_signals=stability_metrics.get("behavior_signals"),
+                    behavior_signals=_behavior_signals_now,
                     mutation_total=stability_metrics.get("mutation_total", 0),
                     mutation_significant=stability_metrics.get("mutation_significant", False),
                 )
@@ -1028,6 +1055,114 @@ def execute_step(
                 )
                 if attempt == 0:
                     tel.record_phase("code_execution", exec_ms)
+                tel.record_disambiguation(
+                    used=stability_metrics.get("disambiguation_used", False),
+                    layer=stability_metrics.get("disambiguation_layer", ""),
+                )
+                tel.record_budget_breakdown(budget.phase_summary())
+
+            # --- Behavior-failure healing path ---
+            # execute_intent() returned success=True but behavior detection
+            # fired (DOM never changed).  This means the action was dispatched
+            # but had no observable effect — the element was likely the wrong
+            # one or was intercepted by an overlay.  Run the healing pipeline
+            # here (same as the exception path) so we attempt a repair before
+            # letting the no-behavior INCONCLUSIVE gate mark the step.
+            if (
+                _behavior_failures_now >= 1
+                and not _behavior_signals_now  # no confirmed signals
+                and attempt < max_retries - 1
+                and not budget.is_exceeded()
+                and budget.remaining_s() > 3.0
+            ):
+                from app.worker.recovery.diagnosis import diagnose_failure
+                from app.worker.healing.pipeline import execute_healing
+
+                _behavior_error = RuntimeError(
+                    f"Behavior detection failure: action executed but no observable "
+                    f"DOM effect detected after {_behavior_failures_now} attempt(s)"
+                )
+                _diag = diagnose_failure(
+                    error_message=str(_behavior_error),
+                    page=page,
+                    timeout_budget_exceeded=False,
+                )
+
+                logger.info(
+                    "structured.behavior_failure_healing",
+                    step=step_number,
+                    attempt=attempt + 1,
+                    behavior_failures=_behavior_failures_now,
+                )
+
+                _healing_budget = int(budget.remaining_s() * 1000)
+                if _healing_budget > 2000 and intent.actions:
+                    _failed_action = intent.actions[-1] if intent.actions else None
+                    if _failed_action is not None:
+                        _healing_locator = None
+                        _healing_pre_state = None
+                        if _failed_action.target:
+                            try:
+                                from app.worker.selector_engine import resolve_target
+                                from app.worker.post_action_verify import capture_pre_state
+
+                                _resolved = resolve_target(
+                                    page, _failed_action.target,
+                                    timeout_ms=min(2000, _healing_budget // 4),
+                                )
+                                _healing_locator = _resolved.locator
+                                _healing_pre_state = capture_pre_state(
+                                    page, _healing_locator,
+                                    _failed_action.action.value,
+                                )
+                            except Exception:
+                                pass
+
+                        _healing = execute_healing(
+                            page, _failed_action, _behavior_error, _diag,
+                            locator=_healing_locator,
+                            ai_client=ai_client,
+                            budget_remaining_ms=min(_healing_budget, 8000),
+                            pre_state=_healing_pre_state,
+                        )
+                        if tel:
+                            tel.record_healing_metrics(
+                                healing_attempted=True,
+                                healing_success=_healing.healed,
+                                healing_layer_used=_healing.layer_used,
+                                healing_strategy=_healing.strategy_used,
+                                healing_elapsed_ms=_healing.elapsed_ms,
+                                selector_repaired=(
+                                    _healing.selector_repair_result is not None
+                                    and _healing.selector_repair_result.repaired
+                                ),
+                                action_repaired=(
+                                    _healing.action_repair_result is not None
+                                    and _healing.action_repair_result.repaired
+                                ),
+                            )
+
+                        if _healing.healed:
+                            heal_count += 1
+                            logger.info(
+                                "structured.behavior_healing_success",
+                                step=step_number,
+                                layer=_healing.layer_used,
+                                strategy=_healing.strategy_used,
+                            )
+                            if _healing.reconstructed_actions:
+                                intent.actions = _healing.reconstructed_actions
+                                intent_json = intent.to_json_str()
+                            # Retry with healed intent
+                            continue
+                        else:
+                            logger.info(
+                                "structured.behavior_healing_failed",
+                                step=step_number,
+                            )
+                # Healing not available or failed — fall through to validation
+                # (the no-behavior INCONCLUSIVE gate will handle the step status)
+
             break
 
         except Exception as e:
@@ -1078,9 +1213,23 @@ def execute_step(
                 error=str(e)[:200],
             )
 
+            # Record failure diagnosis to telemetry
+            if tel:
+                try:
+                    tel.record_failure_diagnosis({
+                        "attempt": attempt + 1,
+                        "failure_type": diagnosis.failure_type.value,
+                        "is_recoverable": diagnosis.is_recoverable,
+                        "confidence": round(diagnosis.confidence, 2),
+                        "error": str(e)[:200],
+                    })
+                except Exception:
+                    pass
+
             if not diagnosis.is_recoverable:
                 if tel:
                     tel.record_attempt(attempt + 1, False, intent_json, exec_ms, str(e)[:500])
+                    tel.record_budget_breakdown(budget.phase_summary())
                 break
 
             if attempt < max_retries - 1:
@@ -1097,9 +1246,19 @@ def execute_step(
                     if effective_actions:
                         recovery_plan.actions = effective_actions
                     recovery_results = execute_recovery_plan(page, recovery_plan)
-                    # Record outcomes for future skipping decisions
+                    # Record outcomes for future skipping decisions and telemetry
                     for rec_action, succeeded in recovery_results:
                         recovery_tracker.record(ft, rec_action.action_type.value, succeeded)
+                        if tel:
+                            try:
+                                tel.record_recovery_action({
+                                    "action_type": rec_action.action_type.value,
+                                    "attempt": attempt + 1,
+                                    "succeeded": succeeded,
+                                    "failure_type": ft,
+                                })
+                            except Exception:
+                                pass
 
                 # Check time budget after recovery
                 if budget.is_exceeded():
@@ -1146,6 +1305,7 @@ def execute_step(
                         if tel:
                             tel.record_healing_metrics(
                                 healing_attempted=True,
+                                healing_success=healing.healed,
                                 healing_layer_used=healing.layer_used,
                                 healing_strategy=healing.strategy_used,
                                 healing_elapsed_ms=healing.elapsed_ms,
@@ -1363,9 +1523,10 @@ def execute_step(
     # --- Behavior-based override ---
     # When vision says "failed" but the behavior detector confirmed
     # DOM mutations (e.g. wizard step transition), AND the vision's own
-    # description of the page matches the expected keywords, trust the
-    # behavior detector and override to passed.  This prevents the retry
-    # loop from re-clicking buttons that already worked.
+    # description of the page matches the expected keywords with high
+    # confidence (≥0.90 ratio AND ≥3 matched words), trust the behavior
+    # detector and override to passed.  Weak matches become INCONCLUSIVE
+    # to avoid silent false positives on error pages with coincidental text.
     if (
         status == "failed"
         and verification_mode == "ai"
@@ -1377,14 +1538,11 @@ def execute_step(
             or "dom_mutation" in (stability_metrics.get("behavior_signals") or [])
         )
         if _had_mutation and expected:
-            # Check if the vision's actual description contains key phrases
-            # from the expected result (case-insensitive)
             _exp_lower = expected.lower()
             _act_lower = actual.lower()
 
             # Extract significant words (3+ chars) from expected and check
-            # keyword overlap with the vision actual description.  The 0.75
-            # threshold ensures most expected content IS present on screen.
+            # keyword overlap with the vision actual description.
             _exp_words = [w for w in _re.findall(r'\b\w{3,}\b', _exp_lower) if w not in {
                 'the', 'and', 'are', 'with', 'from', 'that', 'this', 'for',
                 'has', 'have', 'was', 'were', 'will', 'been', 'page', 'displayed',
@@ -1393,7 +1551,8 @@ def execute_step(
             if _exp_words:
                 _match_count = sum(1 for w in _exp_words if w in _act_lower)
                 _match_ratio = _match_count / len(_exp_words)
-                if _match_ratio >= 0.75:
+                # High-confidence override: ≥0.90 ratio AND at least 3 matched words
+                if _match_ratio >= 0.90 and _match_count >= 3:
                     logger.info(
                         "structured.behavior_override_passed",
                         step=step_number,
@@ -1403,6 +1562,18 @@ def execute_step(
                     )
                     status = "passed"
                     verification_mode = "behavior_override"
+                elif _match_ratio >= 0.70:
+                    # Partial match — action had effect but outcome is uncertain.
+                    # Do NOT pass: keywords may appear on an error page or wrong page.
+                    logger.info(
+                        "structured.behavior_override_inconclusive",
+                        step=step_number,
+                        match_ratio=round(_match_ratio, 2),
+                        matched=_match_count,
+                        total=len(_exp_words),
+                    )
+                    status = "inconclusive"
+                    verification_mode = "behavior_override"
                 else:
                     logger.info(
                         "structured.behavior_override_skipped_low_match",
@@ -1410,6 +1581,27 @@ def execute_step(
                         match_ratio=round(_match_ratio, 2),
                         actual_snippet=_act_lower[:150],
                     )
+
+    # --- No-behavior = INCONCLUSIVE gate ---
+    # If the action executor reported repeated behavior failures (DOM never
+    # changed after clicking), and vision passed or is inconclusive, the
+    # action likely had no real effect. Downgrade to INCONCLUSIVE to prevent
+    # silent false positives from being cached or counted as reliable passes.
+    _behavior_failures = stability_metrics.get("behavior_failures", 0)
+    _behavior_signals = stability_metrics.get("behavior_signals") or []
+    if (
+        status == "passed"
+        and _behavior_failures >= 2
+        and not _behavior_signals  # no confirmed signals from any attempt
+    ):
+        logger.info(
+            "structured.no_behavior_inconclusive",
+            step=step_number,
+            behavior_failures=_behavior_failures,
+        )
+        status = "inconclusive"
+        verification_mode = verification_mode or "no_behavior"
+        actual = actual or "Action executed but no observable DOM effect detected"
 
     # --- Verification-driven retry ---
     # When vision says "failed" but execution succeeded, the cause is either:
@@ -1437,7 +1629,7 @@ def execute_step(
                 page.wait_for_load_state("networkidle", timeout=5000)
             except Exception:
                 pass
-            time.sleep(1.0)
+            _budget_sleep(1.0, "revalidation_settle")
 
             reval_screenshot = page.screenshot(type="png", full_page=False)
             reval_status, reval_actual, reval_vmode = validate_step(
@@ -1556,6 +1748,10 @@ def execute_step(
                 )
                 # Keep original failure result
 
+    # Record final verification level to telemetry
+    if tel:
+        tel.record_verification_level(verification_mode or "skipped")
+
     duration = int((time.monotonic() - step_start) * 1000)
     return {
         "step_number": step_number,
@@ -1566,7 +1762,11 @@ def execute_step(
         "error_message": (
             f"Verification failed: {actual[:200]}"
             if status == "failed" and actual
-            else ""
+            else (
+                f"Inconclusive: {actual[:200]}"
+                if status == "inconclusive" and actual
+                else ""
+            )
         ),
         "evidence_url": evidence_url,
         "generated_code": intent_json,

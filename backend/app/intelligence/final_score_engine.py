@@ -166,6 +166,77 @@ def compute_final_score(
         last_run_ts = max((r.get("created_at") for r in runs if r.get("created_at")), default=None)
     decay = apply_time_decay(final_score, last_run_ts)
 
+    # ── Hard gate rules ───────────────────────────────────────────────────────
+    # These rules override the numeric score when specific quality failures
+    # are detected. They exist to prevent a high numeric score from masking
+    # fundamental correctness problems. Rules run after all adjustments so
+    # they reflect the final state of the run.
+    gate_blocks: list[str] = []
+    gate_warnings: list[str] = []
+
+    # Count inconclusive steps across all runs in this batch
+    all_step_results = [
+        step
+        for run in runs
+        for step in run.get("results", [])
+    ]
+    inconclusive_count = sum(1 for s in all_step_results if s.get("status") == "inconclusive")
+    total_passed_steps = sum(1 for s in all_step_results if s.get("status") == "passed")
+    total_steps = len(all_step_results)
+
+    # Gate 1: Any inconclusive step blocks release — outcome was unverifiable
+    if inconclusive_count > 0:
+        gate_blocks.append(
+            f"{inconclusive_count} step(s) were inconclusive — "
+            "action executed but outcome could not be verified"
+        )
+        final_score = min(final_score, 49)  # force below any passing threshold
+
+    # Gate 2: High behavior_override rate — too many steps passed via heuristic only
+    if total_passed_steps > 0:
+        bo_steps = sum(
+            1 for doc in telemetry_docs.values()
+            for step in doc.get("steps", [])
+            if step.get("verification_level") == "behavior_override"
+               and step.get("status") == "passed"
+        )
+        bo_rate = bo_steps / total_passed_steps if total_passed_steps else 0.0
+        if bo_rate > 0.2:
+            gate_blocks.append(
+                f"Behavior override rate {bo_rate:.0%} exceeds 20% — "
+                f"{bo_steps}/{total_passed_steps} passed steps verified by keyword heuristic only"
+            )
+            final_score = min(final_score, 49)
+        elif bo_rate > 0.1:
+            gate_warnings.append(
+                f"Behavior override rate {bo_rate:.0%} — "
+                "some steps passed via heuristic only; verify manually"
+            )
+
+    # Gate 3: Score below 70 blocks release regardless of other factors
+    if final_score < 70 and not gate_blocks:
+        gate_blocks.append(
+            f"Confidence score {final_score} is below the minimum passing threshold (70)"
+        )
+
+    # If any hard gate fired, force recommendation to "block"
+    if gate_blocks:
+        final_decision = "block"
+        final_reasons = gate_blocks + final_reasons
+        final_grade = _score_to_grade(final_score)
+
+    if gate_warnings:
+        final_reasons = final_reasons + gate_warnings
+
+    logger.info(
+        "final_score.gate_check",
+        gate_blocks=len(gate_blocks),
+        gate_warnings=len(gate_warnings),
+        inconclusive_count=inconclusive_count,
+        final_score_after_gate=final_score,
+        final_decision=final_decision,
+    )
+
     # ── Assemble final output ─────────────────────────────────────────────────
     score_version = "v3" if ai_adjustment != 0 else report.score_version
 
@@ -237,6 +308,11 @@ def compute_final_score(
         "feature_risks": report_dict.get("feature_risks", []),
         "flaky_tests": report_dict.get("flaky_tests", []),
         "timing_anomalies": report_dict.get("timing_anomalies", []),
+
+        # Hard gate results
+        "gate_blocks": gate_blocks,
+        "gate_warnings": gate_warnings,
+        "inconclusive_steps": inconclusive_count,
     }
 
     logger.info(

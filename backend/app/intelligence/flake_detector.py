@@ -29,6 +29,7 @@ class FlakeType(StrEnum):
     SELECTOR_FLAKE = "selector_flake"    # Selector-related failures
     TIMING_FLAKE = "timing_flake"        # Timing-dependent failures
     NETWORK_FLAKE = "network_flake"      # Network-related failures
+    BEHAVIOR_FLAKE = "behavior_flake"    # Action executed but no DOM effect in >30% of runs
 
 
 # Map RetryReason values to FlakeType
@@ -57,9 +58,10 @@ class StepFlakeAnalysis:
     primary_flake_type: str = ""
 
     # Evidence
-    retry_flake_count: int = 0   # Runs where step passed after retry
+    retry_flake_count: int = 0      # Runs where step passed after retry
     intermittent_failures: int = 0  # Runs where step failed
     total_observations: int = 0
+    behavior_flake_count: int = 0   # Runs where behavior_failed was True
 
     # Failure pattern breakdown
     failure_reasons: dict[str, int] = field(default_factory=dict)
@@ -75,6 +77,7 @@ class StepFlakeAnalysis:
             "retry_flake_count": self.retry_flake_count,
             "intermittent_failures": self.intermittent_failures,
             "total_observations": self.total_observations,
+            "behavior_flake_count": self.behavior_flake_count,
             "failure_reasons": self.failure_reasons,
         }
 
@@ -152,6 +155,13 @@ def analyze_step_flakiness(
     )
     analysis.intermittent_failures = failures
 
+    # Count behavior flakes — runs where action had no observable DOM effect
+    behavior_flakes = sum(
+        1 for o in step_observations
+        if o.get("behavior_failed", False) or o.get("behavior_failures", 0) > 0
+    )
+    analysis.behavior_flake_count = behavior_flakes
+
     # Aggregate failure reasons
     reason_counts: Counter[str] = Counter()
     for o in step_observations:
@@ -178,11 +188,15 @@ def analyze_step_flakiness(
     )
     multi_attempt_score = min(avg_extra_attempts / 2, 1.0)  # Cap at 1.0
 
-    # Weighted combination
+    # 4. Behavior failure rate: fraction of runs where action had no DOM effect
+    behavior_failure_rate = behavior_flakes / n if n else 0.0
+
+    # Weighted combination (behavior_failure_rate is an independent signal)
     analysis.flake_score = (
-        0.35 * retry_rate +
-        0.45 * intermittent_rate +
-        0.20 * multi_attempt_score
+        0.30 * retry_rate +
+        0.40 * intermittent_rate +
+        0.15 * multi_attempt_score +
+        0.15 * behavior_failure_rate
     )
     analysis.is_flaky = analysis.flake_score > flake_threshold
 
@@ -194,6 +208,10 @@ def analyze_step_flakiness(
 
     if passes > 0 and failures > 0:
         flake_types_detected.append(FlakeType.INTERMITTENT)
+
+    # Behavior flake: action had no DOM effect in >30% of runs
+    if behavior_failure_rate > 0.30:
+        flake_types_detected.append(FlakeType.BEHAVIOR_FLAKE)
 
     # Classify by failure reason patterns
     for reason, count in reason_counts.items():

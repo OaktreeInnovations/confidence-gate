@@ -14,6 +14,7 @@ export const stepStatusBadgeVariant: Record<StepResultStatus, "success" | "destr
   failed: "destructive",
   skipped: "muted",
   error: "warning",
+  inconclusive: "warning",
 };
 
 export function formatDuration(ms: number): string {

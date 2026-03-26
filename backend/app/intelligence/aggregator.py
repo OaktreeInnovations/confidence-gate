@@ -155,6 +155,14 @@ def compute_execution_profile(
                     for a in attempts
                     if not a.get("success", False) and a.get("error_message")
                 ]
+                # Behavior failure signals for BEHAVIOR_FLAKE classification
+                observation["behavior_failures"] = sum(
+                    a.get("behavior_failures", 0) for a in attempts
+                )
+                observation["behavior_failed"] = any(
+                    a.get("behavior_failed", False) for a in attempts
+                )
+                observation["verification_level"] = ts.get("verification_level", "")
             else:
                 observation["exec_ms"] = observation["duration_ms"]
                 observation["total_attempts"] = 1
@@ -162,6 +170,9 @@ def compute_execution_profile(
                 observation["selector_that_worked"] = ""
                 observation["failure_reasons"] = []
                 observation["failure_messages"] = []
+                observation["behavior_failures"] = 0
+                observation["behavior_failed"] = False
+                observation["verification_level"] = ""
 
             step_data[sn].append(observation)
 

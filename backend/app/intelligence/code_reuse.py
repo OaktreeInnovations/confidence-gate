@@ -290,6 +290,39 @@ def update_code_cache(
             )
 
 
+def invalidate_code_cache(
+    db: Database,
+    test_case_id: str,
+    step_number: int,
+) -> None:
+    """Force-invalidate a cached intent so it is not served on the next run.
+
+    Called when pre-validation detects that a cached intent targets an element
+    that is no longer present on the page (stale DOM reference). Setting
+    stability_score=0.0 ensures get_cached_intent() won't return the entry
+    (the caller requires score >= MIN_SCORE), and resetting
+    consecutive_first_try_successes prevents the grace-period logic in
+    update_code_cache() from keeping the stale code alive after the next failure.
+    """
+    now = datetime.now(timezone.utc)
+    result = db.step_code_cache.update_one(
+        {"test_case_id": test_case_id, "step_number": step_number},
+        {
+            "$set": {
+                "stability_score": 0.0,
+                "consecutive_first_try_successes": 0,
+                "last_updated": now,
+            }
+        },
+    )
+    logger.info(
+        "code_reuse.cache_force_invalidated",
+        test_case_id=test_case_id,
+        step=step_number,
+        matched=result.matched_count,
+    )
+
+
 def _compute_stability_score(
     consecutive_first_try: int,
     total_runs: int,

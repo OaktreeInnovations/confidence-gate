@@ -12,6 +12,9 @@ Signals checked (any one = effect detected):
     4. New listbox / menu / dialog appearance
     5. Active element (focus) change
     6. Input value change on the target element
+    7. aria-checked / aria-selected state change  [NEW]
+    8. CSS state class change (.active, .open, .selected, .checked)  [NEW]
+    9. Network activity triggered by action  [NEW]
 
 Usage in the action feedback loop:
     snapshot = capture_page_snapshot(page, locator)
@@ -51,6 +54,7 @@ class BehaviorEffect:
 
 
 # Single JS call to capture all relevant page state in one round-trip.
+# Expanded to capture aria-checked, aria-selected, and CSS state classes.
 _SNAPSHOT_JS = """() => {
     let domHash = 0;
     try {
@@ -81,6 +85,30 @@ _SNAPSHOT_JS = """() => {
         ).length;
     } catch (_) {}
 
+    // Signal 7: ARIA state counts (checked + selected)
+    let ariaCheckedCount = 0;
+    let ariaSelectedCount = 0;
+    try {
+        ariaCheckedCount = document.querySelectorAll('[aria-checked="true"]').length;
+        ariaSelectedCount = document.querySelectorAll('[aria-selected="true"]').length;
+    } catch (_) {}
+
+    // Signal 8: CSS state class fingerprint — count elements carrying state classes
+    let cssStateFingerprint = 0;
+    try {
+        const stateSelectors = [
+            '.active', '.open', '.selected', '.checked',
+            '.is-active', '.is-open', '.is-selected', '.is-checked',
+            '[data-state="open"]', '[data-state="active"]', '[data-state="checked"]',
+        ];
+        for (const sel of stateSelectors) {
+            try {
+                const count = document.querySelectorAll(sel).length;
+                cssStateFingerprint += count;
+            } catch (_) {}
+        }
+    } catch (_) {}
+
     return {
         url: location.href,
         domHash: domHash,
@@ -89,8 +117,17 @@ _SNAPSHOT_JS = """() => {
         listboxCount: listboxCount,
         menuCount: menuCount,
         dialogCount: dialogCount,
+        ariaCheckedCount: ariaCheckedCount,
+        ariaSelectedCount: ariaSelectedCount,
+        cssStateFingerprint: cssStateFingerprint,
     };
 }"""
+
+# JS to capture element-specific ARIA state (checked + selected) from a locator.
+_ELEMENT_ARIA_JS = """(el) => ({
+    ariaChecked: el.getAttribute('aria-checked'),
+    ariaSelected: el.getAttribute('aria-selected'),
+})"""
 
 
 @dataclass
@@ -106,26 +143,35 @@ class PageSnapshot:
     dialog_count: int = 0
     aria_expanded: str | None = None
     element_value: str = ""
+    # New signals
+    aria_checked_count: int = 0        # Signal 7a: page-wide aria-checked="true" count
+    aria_selected_count: int = 0       # Signal 7b: page-wide aria-selected="true" count
+    css_state_fingerprint: int = 0     # Signal 8: CSS state class count
+    element_aria_checked: str | None = None   # Signal 7a on target element
+    element_aria_selected: str | None = None  # Signal 7b on target element
+    network_request_count: int = 0     # Signal 9: network requests triggered
 
 
 def capture_page_snapshot(
     page: Page,
     locator: Locator | None = None,
+    network_request_count: int = 0,
 ) -> PageSnapshot:
     """Capture a snapshot of page state before an action.
 
     Runs a single JS evaluation to collect DOM hash, active element,
-    popup counts, and URL. Optionally captures element-specific state
-    (aria-expanded, input value) from the target locator.
+    popup counts, URL, and new ARIA/CSS state signals.
 
     Args:
         page: Playwright Page instance.
         locator: Target element locator (optional).
+        network_request_count: Current count of observed network requests (optional).
 
     Returns:
         PageSnapshot with all captured state.
     """
     snap = PageSnapshot()
+    snap.network_request_count = network_request_count
 
     # Page-level state via single JS call
     try:
@@ -138,6 +184,9 @@ def capture_page_snapshot(
             snap.listbox_count = result.get("listboxCount", 0)
             snap.menu_count = result.get("menuCount", 0)
             snap.dialog_count = result.get("dialogCount", 0)
+            snap.aria_checked_count = result.get("ariaCheckedCount", 0)
+            snap.aria_selected_count = result.get("ariaSelectedCount", 0)
+            snap.css_state_fingerprint = result.get("cssStateFingerprint", 0)
     except Exception as e:
         # Fallback: capture URL from Playwright API
         try:
@@ -156,6 +205,14 @@ def capture_page_snapshot(
             snap.element_value = locator.input_value(timeout=500)
         except Exception:
             pass
+        # New: element-level ARIA checked/selected
+        try:
+            aria_result = locator.evaluate(_ELEMENT_ARIA_JS, timeout=500)
+            if isinstance(aria_result, dict):
+                snap.element_aria_checked = aria_result.get("ariaChecked")
+                snap.element_aria_selected = aria_result.get("ariaSelected")
+        except Exception:
+            pass
 
     return snap
 
@@ -164,6 +221,7 @@ def detect_behavior_effect(
     page: Page,
     locator: Locator | None,
     pre_snapshot: PageSnapshot,
+    post_network_count: int = 0,
 ) -> BehaviorEffect:
     """Detect whether an action had any observable effect on the page.
 
@@ -174,14 +232,15 @@ def detect_behavior_effect(
         page: Playwright Page instance.
         locator: Target element locator (may be None for navigate).
         pre_snapshot: Snapshot captured before the action.
+        post_network_count: Network requests observed after the action.
 
     Returns:
         BehaviorEffect with detected=True if any signal changed.
     """
     signals: list[str] = []
 
-    # Capture post-action snapshot
-    post = capture_page_snapshot(page, locator)
+    # Capture post-action snapshot (pass post network count for comparison)
+    post = capture_page_snapshot(page, locator, network_request_count=post_network_count)
 
     # Signal 1: URL change
     if post.url and pre_snapshot.url and post.url != pre_snapshot.url:
@@ -217,6 +276,38 @@ def detect_behavior_effect(
         and post.element_value  # ignore empty→empty
     ):
         signals.append("value_change")
+
+    # Signal 7a: aria-checked state changed on target element
+    if (
+        post.element_aria_checked is not None
+        and pre_snapshot.element_aria_checked is not None
+        and post.element_aria_checked != pre_snapshot.element_aria_checked
+    ):
+        signals.append("aria_checked_change")
+
+    # Signal 7b: aria-selected state changed on target element
+    if (
+        post.element_aria_selected is not None
+        and pre_snapshot.element_aria_selected is not None
+        and post.element_aria_selected != pre_snapshot.element_aria_selected
+    ):
+        signals.append("aria_selected_change")
+
+    # Signal 7c: Page-wide aria-checked/selected count changed
+    # (catches custom checkboxes, tab panels, option lists)
+    if post.aria_checked_count != pre_snapshot.aria_checked_count:
+        signals.append("aria_checked_count_change")
+    if post.aria_selected_count != pre_snapshot.aria_selected_count:
+        signals.append("aria_selected_count_change")
+
+    # Signal 8: CSS state class fingerprint changed
+    # (catches .active, .open, .selected, .checked toggles)
+    if post.css_state_fingerprint != pre_snapshot.css_state_fingerprint:
+        signals.append("css_state_change")
+
+    # Signal 9: Network activity triggered (new requests since pre-snapshot)
+    if post_network_count > pre_snapshot.network_request_count:
+        signals.append("network_activity")
 
     detected = len(signals) > 0
 

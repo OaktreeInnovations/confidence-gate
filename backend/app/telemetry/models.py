@@ -89,6 +89,7 @@ class ExecutionAttempt(BaseModel):
 
     # BDRE metrics (behavior-driven resolution engine)
     behavior_failures: int = 0                  # actions with no detected behavior effect
+    behavior_failed: bool = False               # True if any behavior failures occurred
     interaction_attempts: int = 0               # total interaction attempts (incl. repair)
     resolution_retries: int = 0                 # in-attempt selector re-resolutions
     behavior_signals: list[str] = Field(default_factory=list)  # e.g. ["url_change", "dom_mutation"]
@@ -97,6 +98,7 @@ class ExecutionAttempt(BaseModel):
 
     # Healing metrics
     healing_attempted: bool = False
+    healing_success: bool = False               # True if healing actually resolved the issue
     healing_layer_used: int = 0                 # 0=none, 1=selector, 2=action, 3=ai
     healing_strategy: str = ""                  # e.g. "text_similarity", "focus_enter"
     healing_elapsed_ms: int = 0
@@ -154,6 +156,9 @@ class StepTelemetry(BaseModel):
     # Recovery diagnosis metrics (Part 2, 9)
     failure_diagnoses: list[dict] = Field(default_factory=list)  # FailureDiagnosis.to_dict()
     recovery_actions_taken: list[dict] = Field(default_factory=list)
+
+    # Verification outcome (Phase 5)
+    verification_level: str = ""               # final verification mode: "ai", "dom-only", "behavior_override", "skipped", "inconclusive"
 
 
 class EnvironmentSnapshot(BaseModel):

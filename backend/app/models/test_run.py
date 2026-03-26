@@ -19,6 +19,7 @@ class StepResultStatus(StrEnum):
     FAILED = "failed"
     SKIPPED = "skipped"
     ERROR = "error"
+    INCONCLUSIVE = "inconclusive"  # action executed but outcome unverifiable
 
 
 class StepResult(BaseModel):

@@ -13,7 +13,7 @@ from app.telemetry.models import (
 )
 
 
-def _make_step(healing_attempted=False, healing_layer=0) -> StepTelemetry:
+def _make_step(healing_attempted=False, healing_layer=0, healing_success=True) -> StepTelemetry:
     """Create a minimal passing StepTelemetry."""
     attempts = [
         ExecutionAttempt(
@@ -23,6 +23,7 @@ def _make_step(healing_attempted=False, healing_layer=0) -> StepTelemetry:
             healing_attempted=healing_attempted,
             healing_layer_used=healing_layer,
             healing_strategy="text_similarity" if healing_attempted else "",
+            healing_success=healing_success if healing_attempted else False,
         ),
     ]
     return StepTelemetry(

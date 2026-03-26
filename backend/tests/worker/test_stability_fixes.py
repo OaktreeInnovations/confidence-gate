@@ -359,7 +359,7 @@ def test_guard_wait_respects_budget():
 
 
 def test_low_confidence_selector_escalates():
-    """When best score < 0.45 and AI is available, confidence escalation triggers."""
+    """When best score is between MIN_SCORE and 0.45 and AI is available, confidence escalation triggers."""
     from app.worker.selector_engine.resolver import resolve_target
     from app.worker.intent_schema import TargetDescriptor
 
@@ -368,12 +368,13 @@ def test_low_confidence_selector_escalates():
 
     target = TargetDescriptor(role="button", name="Submit")
 
-    # Create a low-score candidate from tier 1
+    # Create a low-score candidate from tier 1 — above MIN_SCORE (0.40) but below
+    # MIN_SELECTOR_CONFIDENCE (0.45) so the AI confidence escalation fires.
     low_candidate = CandidateScore(
         locator=MagicMock(),
         strategy=SelectorStrategy.TEXT,
         params={"text": "Submit"},
-        composite=0.30,
+        composite=0.42,
         resolution_tier=3,
     )
     low_candidate.total_candidates = 5

@@ -24,9 +24,27 @@ _SELECTOR_AMBIGUITY = 0.10     # Multiple selectors tried
 _FAILED_AI_CALL = 0.10         # AI call failed (had to retry/fallback)
 _CUSTOM_CODE_PENALTY = 0.05    # Custom code is less adaptive
 _HEALING_USED_PENALTY = 0.10   # Healing needed (indicates selector instability)
+_HEALING_FAILED_PENALTY = 0.15 # Healing was attempted but did not succeed
 _SLOW_EXECUTION = 0.05         # Execution took > 10s (single step)
 _VERY_SLOW_EXECUTION = 0.10    # Execution took > 30s
 _NO_VERIFICATION = 0.05        # No vision verification performed
+_BEHAVIOR_OVERRIDE_PENALTY = 0.25  # Vision overridden by heuristic keyword match
+_BEHAVIOR_FAILURE_PENALTY = 0.20   # Action executed but no observable DOM effect
+_INCONCLUSIVE_PENALTY = 0.35   # Step outcome was inconclusive (counts as 0 confidence)
+
+# --- Verification level multipliers (applied to final score) ---
+# "ai" = full vision verification — no adjustment
+# "dom-only" = weaker; reduce confidence slightly
+# "behavior_override" = heuristic pass; confidence already penalised above
+# "skipped" = no verification at all; strong penalty
+_VERIFICATION_MULTIPLIER: dict[str, float] = {
+    "ai": 1.0,
+    "dom-only": 0.90,
+    "behavior_override": 0.85,
+    "inconclusive": 0.0,   # inconclusive = not passed; score must be 0
+    "skipped": 0.80,
+    "": 0.95,               # unknown/not recorded
+}
 
 # --- Bonus weights ---
 _FIRST_ATTEMPT_BONUS = 0.0     # No bonus needed — it's the default
@@ -45,9 +63,25 @@ def compute_step_confidence(step: StepTelemetry) -> float:
     """
     score = 1.0
 
-    # Failed steps get a floor score
+    # Inconclusive and failed steps get a floor score of 0.0
+    if step.status in ("failed", "error", "inconclusive"):
+        return 0.0
+
+    # Non-passed statuses (skipped) treated as 0
     if step.status != "passed":
         return 0.0
+
+    # Behavior override: vision was overridden by a heuristic keyword match.
+    # This is inherently less reliable — penalise before other adjustments.
+    if step.verification_level == "behavior_override":
+        score -= _BEHAVIOR_OVERRIDE_PENALTY
+
+    # Behavior failures: action had no observable DOM effect on at least one attempt
+    behavior_failed_count = sum(
+        1 for a in step.attempts if getattr(a, "behavior_failed", False)
+    )
+    if behavior_failed_count > 0:
+        score -= _BEHAVIOR_FAILURE_PENALTY
 
     # Retry penalties
     extra_attempts = max(0, step.total_attempts - 1)
@@ -61,9 +95,13 @@ def compute_step_confidence(step: StepTelemetry) -> float:
     if len(step.selectors_tried) > 2:
         score -= _SELECTOR_AMBIGUITY
 
-    # Healing penalty: step required healing to pass
-    if any(a.healing_attempted for a in step.attempts):
+    # Healing penalties
+    healed_attempts = [a for a in step.attempts if a.healing_attempted]
+    if healed_attempts:
         score -= _HEALING_USED_PENALTY
+        # Extra penalty if healing was attempted but never succeeded
+        if not any(getattr(a, "healing_success", False) for a in healed_attempts):
+            score -= _HEALING_FAILED_PENALTY
 
     # Failed AI calls
     failed_ai = sum(1 for c in step.ai_calls if not c.success)
@@ -87,6 +125,10 @@ def compute_step_confidence(step: StepTelemetry) -> float:
     # No verification penalty
     if step.timings.verification_ms == 0:
         score -= _NO_VERIFICATION
+
+    # Apply verification level multiplier
+    multiplier = _VERIFICATION_MULTIPLIER.get(step.verification_level, 0.95)
+    score *= multiplier
 
     return max(0.0, min(1.0, round(score, 3)))
 
@@ -148,9 +190,23 @@ def compute_run_confidence(run: RunTelemetry) -> dict:
     if run.flake_indicators:
         run_risks.append(f"{len(run.flake_indicators)} flake indicators detected")
 
-    failed_steps = sum(1 for s in run.steps if s.status != "passed")
+    failed_steps = sum(1 for s in run.steps if s.status in ("failed", "error"))
+    inconclusive_steps = sum(1 for s in run.steps if s.status == "inconclusive")
     if failed_steps > 0:
         run_risks.append(f"{failed_steps} step(s) failed")
+    if inconclusive_steps > 0:
+        run_risks.append(f"{inconclusive_steps} step(s) inconclusive — outcome unverifiable")
+
+    # Behavior override rate: what fraction of passed steps used heuristic override
+    passed_steps = [s for s in run.steps if s.status == "passed"]
+    override_steps = sum(1 for s in passed_steps if s.verification_level == "behavior_override")
+    if passed_steps:
+        override_rate = override_steps / len(passed_steps)
+        if override_rate > 0.2:
+            run_risks.append(
+                f"High behavior_override rate ({override_rate:.0%}) — "
+                f"{override_steps}/{len(passed_steps)} steps verified by heuristic only"
+            )
 
     slow_steps = sum(1 for s in run.steps if s.timings.total_ms > 15000)
     if slow_steps > 0:
@@ -162,10 +218,11 @@ def compute_run_confidence(run: RunTelemetry) -> dict:
     if total_ai_failures > 0:
         run_risks.append(f"{total_ai_failures} AI call(s) failed")
 
-    # Recommendation
-    if overall >= _RELIABLE_THRESHOLD and failed_steps == 0:
+    # Recommendation — inconclusive steps always make the run unstable
+    all_non_pass = failed_steps + inconclusive_steps
+    if overall >= _RELIABLE_THRESHOLD and all_non_pass == 0:
         recommendation = "reliable"
-    elif overall >= _FLAKY_THRESHOLD:
+    elif overall >= _FLAKY_THRESHOLD and inconclusive_steps == 0:
         recommendation = "flaky"
     else:
         recommendation = "unstable"
@@ -182,8 +239,20 @@ def _identify_step_risks(step: StepTelemetry, score: float) -> list[str]:
     """Identify human-readable risk factors for a single step."""
     risks = []
 
-    if step.status != "passed":
+    if step.status == "inconclusive":
+        risks.append("Step inconclusive — action executed but outcome unverifiable")
+    elif step.status != "passed":
         risks.append(f"Step {step.status}")
+
+    if step.verification_level == "behavior_override":
+        risks.append("Verification by heuristic keyword match (behavior_override)")
+
+    # Behavior failures in any attempt
+    behavior_failed_count = sum(
+        1 for a in step.attempts if getattr(a, "behavior_failed", False)
+    )
+    if behavior_failed_count > 0:
+        risks.append(f"Action had no observable DOM effect in {behavior_failed_count} attempt(s)")
 
     if step.total_attempts > 1:
         risks.append(f"Required {step.total_attempts} attempts")
@@ -212,5 +281,7 @@ def _identify_step_risks(step: StepTelemetry, score: float) -> list[str]:
         )
         if layers:
             risks.append(f"Healing required (layers: {sorted(layers)})")
+        if not any(getattr(a, "healing_success", False) for a in healing_attempts):
+            risks.append("Healing attempted but did not succeed")
 
     return risks

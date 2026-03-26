@@ -239,6 +239,7 @@ class _StepTelemetryBuilder:
             if success and extracted:
                 self._selector_that_worked = extracted[-1]
 
+        _bf = getattr(self, "_last_behavior_failures", 0)
         self._attempts.append(ExecutionAttempt(
             attempt_number=attempt_number,
             success=success,
@@ -253,7 +254,8 @@ class _StepTelemetryBuilder:
             post_action_verified=getattr(self, "_last_post_action_verified", True),
             post_action_method=getattr(self, "_last_post_action_method", ""),
             # BDRE metrics (staged via record_stability_metrics)
-            behavior_failures=getattr(self, "_last_behavior_failures", 0),
+            behavior_failures=_bf,
+            behavior_failed=_bf > 0,
             interaction_attempts=getattr(self, "_last_interaction_attempts", 0),
             resolution_retries=getattr(self, "_last_resolution_retries", 0),
             behavior_signals=list(getattr(self, "_last_behavior_signals", [])),
@@ -261,6 +263,7 @@ class _StepTelemetryBuilder:
             mutation_significant=getattr(self, "_last_mutation_significant", False),
             # Healing metrics (staged via record_healing_metrics)
             healing_attempted=getattr(self, "_last_healing_attempted", False),
+            healing_success=getattr(self, "_last_healing_success", False),
             healing_layer_used=getattr(self, "_last_healing_layer_used", 0),
             healing_strategy=getattr(self, "_last_healing_strategy", ""),
             healing_elapsed_ms=getattr(self, "_last_healing_elapsed_ms", 0),
@@ -270,6 +273,7 @@ class _StepTelemetryBuilder:
 
         # Reset staged healing metrics to prevent bleed into next attempt
         self._last_healing_attempted = False
+        self._last_healing_success = False
         self._last_healing_layer_used = 0
         self._last_healing_strategy = ""
         self._last_healing_elapsed_ms = 0
@@ -360,6 +364,7 @@ class _StepTelemetryBuilder:
     def record_healing_metrics(
         self,
         healing_attempted: bool = False,
+        healing_success: bool = False,
         healing_layer_used: int = 0,
         healing_strategy: str = "",
         healing_elapsed_ms: int = 0,
@@ -372,11 +377,16 @@ class _StepTelemetryBuilder:
         Follows the same staging pattern as record_stability_metrics().
         """
         self._last_healing_attempted = healing_attempted
+        self._last_healing_success = healing_success
         self._last_healing_layer_used = healing_layer_used
         self._last_healing_strategy = healing_strategy
         self._last_healing_elapsed_ms = healing_elapsed_ms
         self._last_selector_repaired = selector_repaired
         self._last_action_repaired = action_repaired
+
+    def record_verification_level(self, level: str) -> None:
+        """Record the final verification mode used for this step."""
+        self._verification_level = level
 
     def build(self, status: str) -> StepTelemetry:
         """Finalize and return the immutable StepTelemetry model."""
@@ -426,6 +436,7 @@ class _StepTelemetryBuilder:
             ai_gate_metrics=getattr(self, "_ai_gate_metrics", {}),
             failure_diagnoses=getattr(self, "_failure_diagnoses", []),
             recovery_actions_taken=getattr(self, "_recovery_actions", []),
+            verification_level=getattr(self, "_verification_level", ""),
         )
 
 

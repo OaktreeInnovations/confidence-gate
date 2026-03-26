@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from app.worker.intent_schema import ActionType
+from app.worker.stability_wrappers import _budget_sleep
 from app.worker.post_action_verify import (
     ActionVerification,
     capture_pre_state,
@@ -261,7 +262,7 @@ def _select_via_click_option(page: Page, locator: Locator, value: str) -> None:
     """Click the trigger to open dropdown, then click the option by text."""
     locator.click()
     # Wait briefly for dropdown to appear
-    time.sleep(0.3)
+    _budget_sleep(0.3, "dropdown_open_settle")
     # Find and click the option
     option = page.get_by_role("option", name=value)
     if option.count() == 0:
@@ -274,6 +275,6 @@ def _select_via_type_filter(page: Page, locator: Locator, value: str) -> None:
     """Type into combobox to filter, then select from filtered results."""
     locator.click()
     page.keyboard.type(value)
-    time.sleep(0.3)
+    _budget_sleep(0.3, "combobox_filter_settle")
     # Press Enter to select the first filtered result
     page.keyboard.press("Enter")

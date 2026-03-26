@@ -105,7 +105,7 @@ class TestPostActionStability:
 
             _execute_single_action(page, action, timeout_ms=10000)
 
-        mock_stable.assert_called_once_with(page, timeout_ms=1500, settle_ms=150)
+        mock_stable.assert_called_once_with(page, timeout_ms=1500, settle_ms=300)
 
     @patch("app.worker.intent_executor.wait_for_dom_stable")
     @patch("app.worker.intent_executor.detect_behavior_effect")

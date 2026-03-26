@@ -1,5 +1,5 @@
 export type TestRunStatus = "queued" | "running" | "passed" | "failed" | "error" | "cancelled";
-export type StepResultStatus = "passed" | "failed" | "skipped" | "error";
+export type StepResultStatus = "passed" | "failed" | "skipped" | "error" | "inconclusive";
 
 export interface StepResult {
   step_number: number;

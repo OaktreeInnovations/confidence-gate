@@ -304,12 +304,22 @@ def resolve_target(
             f"{target.model_dump(exclude_none=True)} in {resolution_ms}ms"
         )
 
-    # Filter: only keep visible, enabled candidates above minimum threshold
-    MIN_SCORE = 0.15
+    # Filter: only keep visible, enabled candidates above minimum threshold.
+    # 0.40 is the lowest score considered safe for interaction — below this
+    # the resolver is guessing and risks clicking the wrong element.
+    MIN_SCORE = 0.40
     viable = [c for c in all_candidates if c.composite >= MIN_SCORE]
     if not viable:
-        # Fall back to best of what we have
-        viable = all_candidates[:1]
+        # No candidate meets the minimum confidence threshold.
+        # Raise so the caller can trigger healing rather than clicking the wrong element.
+        resolution_ms = int((time.monotonic() - t0) * 1000)
+        best = all_candidates[0] if all_candidates else None
+        raise RuntimeError(
+            f"No viable selector found for target "
+            f"{target.model_dump(exclude_none=True)}: "
+            f"best score {round(best.composite, 3) if best else 'N/A'} < {MIN_SCORE} "
+            f"in {resolution_ms}ms"
+        )
 
     # Confidence threshold: if best candidate is too weak, attempt AI escalation
     MIN_SELECTOR_CONFIDENCE = 0.45
