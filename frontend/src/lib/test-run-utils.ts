@@ -6,6 +6,7 @@ export const runStatusBadgeVariant: Record<TestRunStatus, "muted" | "default" | 
   passed: "success",
   failed: "destructive",
   error: "warning",
+  cancelled: "muted",
 };
 
 export const stepStatusBadgeVariant: Record<StepResultStatus, "success" | "destructive" | "muted" | "warning"> = {

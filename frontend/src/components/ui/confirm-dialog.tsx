@@ -40,7 +40,7 @@ export function ConfirmDialog({
         <h3 className="text-lg font-semibold">{title}</h3>
         <p className="mt-2 text-sm text-muted-foreground">{description}</p>
         <div className="mt-4 flex justify-end gap-2">
-          <Button variant="outline" size="sm" onClick={onCancel} disabled={loading}>
+          <Button variant="outline" size="sm" onClick={onCancel} disabled={loading} data-testid="confirm-dialog-cancel">
             {cancelLabel}
           </Button>
           <Button
@@ -48,6 +48,7 @@ export function ConfirmDialog({
             size="sm"
             onClick={onConfirm}
             disabled={loading}
+            data-testid="confirm-dialog-confirm"
           >
             {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {confirmLabel}

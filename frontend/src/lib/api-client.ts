@@ -1,7 +1,8 @@
 import { getFirebaseAuth } from "@/lib/firebase";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
+// Empty base — requests go to /api/* which Next.js rewrites to the backend.
+// This works both from the user's browser and from Playwright inside Docker.
+const API_BASE_URL = "";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const LONG_REQUEST_TIMEOUT_MS = 180_000;

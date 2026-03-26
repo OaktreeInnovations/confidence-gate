@@ -275,8 +275,9 @@ export default function NewTestCasePage() {
             )}
 
             <div className="space-y-2">
-              <Label>Title</Label>
+              <Label htmlFor="tc-title">Title</Label>
               <Input
+                id="tc-title"
                 required
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -308,8 +309,9 @@ export default function NewTestCasePage() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Priority</Label>
+                <Label htmlFor="priority">Priority</Label>
                 <Select
+                  id="priority"
                   value={priority}
                   onChange={(e) => setPriority(e.target.value as TestCasePriority)}
                 >
@@ -320,8 +322,9 @@ export default function NewTestCasePage() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Status</Label>
+                <Label htmlFor="tc-status">Status</Label>
                 <Select
+                  id="tc-status"
                   value={tcStatus}
                   onChange={(e) => setTcStatus(e.target.value as TestCaseStatus)}
                 >

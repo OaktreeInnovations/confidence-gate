@@ -1,4 +1,4 @@
-export type TestRunStatus = "queued" | "running" | "passed" | "failed" | "error";
+export type TestRunStatus = "queued" | "running" | "passed" | "failed" | "error" | "cancelled";
 export type StepResultStatus = "passed" | "failed" | "skipped" | "error";
 
 export interface StepResult {

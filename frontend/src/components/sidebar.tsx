@@ -81,6 +81,7 @@ export function Sidebar() {
           size="sm"
           className="mt-1 w-full justify-start gap-2 text-muted-foreground"
           onClick={signOut}
+          data-testid="sign-out-btn"
         >
           <LogOut className="h-4 w-4" />
           Sign out

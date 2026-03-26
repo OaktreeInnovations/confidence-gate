@@ -418,7 +418,7 @@ export default function ProjectDetailPage() {
               <Pencil className="h-4 w-4" />
               Edit
             </Button>
-            <Button variant="destructive" size="sm" onClick={handleDeleteProject}>
+            <Button variant="destructive" size="sm" onClick={handleDeleteProject} data-testid="delete-project-btn">
               <Trash2 className="h-4 w-4" />
               Delete
             </Button>
@@ -443,6 +443,7 @@ export default function ProjectDetailPage() {
                 size="sm"
                 onClick={handleDeleteSelected}
                 disabled={deletingSelected}
+                data-testid="delete-selected-btn"
               >
                 {deletingSelected ? (
                   <Loader2 className="h-4 w-4 animate-spin" />

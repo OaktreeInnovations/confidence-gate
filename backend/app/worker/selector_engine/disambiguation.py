@@ -257,7 +257,7 @@ def _disambiguate_by_ai(
         if raw_client is None:
             return None
         response = raw_client.chat.completions.create(
-            model="gpt-5-mini",  # Cheap model for disambiguation
+            model="gpt-4o-mini",  # Cheap model for disambiguation
             max_completion_tokens=16,
             messages=messages,
         )

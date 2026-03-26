@@ -94,6 +94,7 @@ export default function LoginPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@example.com"
+                  data-testid="login-email"
                 />
               </div>
 
@@ -107,6 +108,7 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
+                  data-testid="login-password"
                 />
               </div>
 
@@ -116,7 +118,7 @@ export default function LoginPage() {
                 </div>
               )}
 
-              <Button type="submit" disabled={submitting} className="w-full">
+              <Button type="submit" disabled={submitting} className="w-full" data-testid="sign-in-btn">
                 {submitting
                   ? "Loading..."
                   : isSignUp

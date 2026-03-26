@@ -174,16 +174,16 @@ services:
       dockerfile: Dockerfile
       target: runner
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8001
         NEXT_PUBLIC_FIREBASE_API_KEY: AIzaSyCBxGKx2t5mTcxcLnmdTQw5dtaL8tnJEeA
         NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: qualora-bd693.firebaseapp.com
         NEXT_PUBLIC_FIREBASE_PROJECT_ID: qualora-bd693
+        BACKEND_URL: http://qualora-backend-api:8000
     container_name: qualora-frontend
     restart: unless-stopped
     ports:
       - "3001:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8001
+      - BACKEND_URL=http://qualora-backend-api:8000
     depends_on:
       backend-api:
         condition: service_healthy

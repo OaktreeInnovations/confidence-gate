@@ -74,10 +74,8 @@ function ApiEvidence({
       try {
         const token = await getIdToken();
         if (!token) return;
-        const API_BASE =
-          process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
         const response = await fetch(
-          `${API_BASE}/api/test-runs/${testRunId}/evidence/${stepNumber}`,
+          `/api/test-runs/${testRunId}/evidence/${stepNumber}`,
           { headers: { Authorization: `Bearer ${token}` } },
         );
         if (response.ok && !cancelled) {
@@ -192,10 +190,8 @@ function EvidenceImage({
         const headers: Record<string, string> = {
           Authorization: `Bearer ${token}`,
         };
-        const API_BASE =
-          process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
         const response = await fetch(
-          `${API_BASE}/api/test-runs/${testRunId}/evidence/${stepNumber}`,
+          `/api/test-runs/${testRunId}/evidence/${stepNumber}`,
           { headers },
         );
         if (response.ok && !cancelled) {
@@ -555,11 +551,10 @@ export default function TestRunDetailPage() {
     try {
       const token = await getIdToken();
       if (!token) return;
-      const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 90000);
       const response = await fetch(
-        `${API_BASE}/api/test-runs/${id}/report`,
+        `/api/test-runs/${id}/report`,
         { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal },
       );
       clearTimeout(timeout);

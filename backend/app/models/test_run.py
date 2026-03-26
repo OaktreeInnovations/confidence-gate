@@ -11,6 +11,7 @@ class TestRunStatus(StrEnum):
     PASSED = "passed"
     FAILED = "failed"
     ERROR = "error"
+    CANCELLED = "cancelled"
 
 
 class StepResultStatus(StrEnum):
