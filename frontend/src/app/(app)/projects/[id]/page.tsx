@@ -19,7 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ArrowLeft, Plus, Pencil, Trash2, ChevronLeft, ChevronRight, Play, Sparkles, Loader2, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Plus, Pencil, Trash2, ChevronLeft, ChevronRight, Play, Sparkles, Loader2, ShieldCheck, Circle } from "lucide-react";
 import { FlakeBadge } from "@/components/flake-badge";
 import { useToast } from "@/components/ui/toast";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -481,6 +481,7 @@ export default function ProjectDetailPage() {
             <Play className="h-4 w-4" />
             {runningAll ? "Starting..." : "Run All"}
           </Button>
+          {/* Quick Capture hidden — WIP */}
           <Link href={`/test-cases/generate?project_id=${id}`}>
             <Button variant="outline" size="sm">
               <Sparkles className="h-4 w-4" />

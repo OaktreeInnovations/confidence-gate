@@ -21,6 +21,17 @@ def detect_anomalies(
     if not runs:
         return anomalies
 
+    # Build title lookup so anomaly details show names, not IDs
+    tc_titles: dict[str, str] = {}
+    for run in runs:
+        tid = str(run.get("test_case_id", ""))
+        title = run.get("test_case_title", "")
+        if tid and title:
+            tc_titles[tid] = title
+
+    def _tc_label(tc_id: str) -> str:
+        return tc_titles.get(tc_id, tc_id)
+
     try:
         # --- 1. Retry spike: current avg_attempts vs profile baseline ---
         for tc_id, profile in profiles.items():
@@ -73,7 +84,7 @@ def detect_anomalies(
                 "severity": severity,
                 "deviation": round(z, 3),
                 "detail": (
-                    f"Test {tc_id}: avg attempts {current_avg:.2f} vs baseline {baseline_mean:.2f} "
+                    f"'{_tc_label(tc_id)}': avg attempts {current_avg:.2f} vs baseline {baseline_mean:.2f} "
                     f"(z={z:.2f})"
                 ),
             })
@@ -114,7 +125,7 @@ def detect_anomalies(
                 "severity": severity,
                 "deviation": round(z, 3),
                 "detail": (
-                    f"Test {tc_id}: avg duration {current_avg_dur:.0f}ms vs median {median_dur}ms "
+                    f"'{_tc_label(tc_id)}': avg duration {current_avg_dur:.0f}ms vs median {median_dur}ms "
                     f"(z={z:.2f})"
                 ),
             })
@@ -146,7 +157,7 @@ def detect_anomalies(
                     "severity": "high",
                     "deviation": round(current_failure_rate - flake_rate, 4),
                     "detail": (
-                        f"Test {tc_id}: current failure rate {current_failure_rate:.0%} exceeds "
+                        f"'{_tc_label(tc_id)}': current failure rate {current_failure_rate:.0%} exceeds "
                         f"profile flake rate {flake_rate:.0%} by more than 30%"
                     ),
                 })

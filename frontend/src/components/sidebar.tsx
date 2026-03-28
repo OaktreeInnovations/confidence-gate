@@ -12,6 +12,7 @@ import {
   TestTubeDiagonal,
   Play,
   ShieldCheck,
+  BookOpen,
   LogOut,
 } from "lucide-react";
 
@@ -21,6 +22,7 @@ const navItems = [
   { href: "/test-cases", label: "Test Cases", icon: TestTubeDiagonal },
   { href: "/test-runs", label: "Test Runs", icon: Play },
   { href: "/releases", label: "Releases", icon: ShieldCheck },
+  { href: "/docs", label: "Reference", icon: BookOpen },
 ];
 
 export function Sidebar() {

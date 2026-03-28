@@ -364,12 +364,24 @@ def _attribute_alignment(
             score = 0.7
 
     elif strategy == SelectorStrategy.LABEL:
-        label_param = _normalize_ws(params.get("label", ""))
-        if label_param and (
-            label_param in _normalize_ws(meta.get("aria_label", ""))
-            or label_param in _normalize_ws(meta.get("text", ""))
+        label_param = _normalize_ws(params.get("label", "")).lower()
+        if not label_param:
+            pass
+        elif (
+            label_param in _normalize_ws(meta.get("aria_label", "")).lower()
+            or label_param in _normalize_ws(meta.get("text", "")).lower()
         ):
+            # Element itself is labelled (aria-label or visible text)
             score = 1.0
+        elif label_param == _normalize_ws(meta.get("name", "")).lower():
+            # name="password" matches label="Password" — very reliable signal
+            score = 1.0
+        elif label_param == _normalize_ws(meta.get("type", "")).lower():
+            # type="password" matches label="Password"
+            score = 0.9
+        elif label_param in _normalize_ws(meta.get("placeholder", "")).lower():
+            # placeholder contains label text
+            score = 0.85
 
     elif strategy == SelectorStrategy.PLACEHOLDER:
         ph_param = _normalize_ws(params.get("placeholder", ""))

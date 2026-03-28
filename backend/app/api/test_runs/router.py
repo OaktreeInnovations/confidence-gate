@@ -631,6 +631,91 @@ async def rerun_step(
     return TestRunResponse.from_test_run(TestRun(**doc))
 
 
+class RepairSuggestionResponse(BaseModel):
+    type: str
+    description: str
+    confidence: float
+    changes: dict
+
+
+@router.post("/{test_run_id}/steps/{step_number}/repair-suggestions")
+async def get_repair_suggestions(
+    test_run_id: str,
+    step_number: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+    request: Request,
+) -> list[RepairSuggestionResponse]:
+    """Generate AI repair suggestions for a failed step."""
+    from app.intelligence.repair_engine import suggest_repairs
+
+    org_id = require_org(current_user)
+    oid = parse_object_id(test_run_id)
+    settings = get_settings(request)
+
+    doc = await db.test_runs.find_one({"_id": oid, "org_id": org_id})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test run not found")
+
+    tr = TestRun(**doc)
+    step_result = next((r for r in tr.results if r.step_number == step_number), None)
+    if not step_result:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Step not found")
+
+    # Fetch screenshot from MinIO (best-effort)
+    screenshot: bytes | None = None
+    if step_result.evidence_url:
+        s3_client = get_s3(request)
+        key = f"{step_result.evidence_url.rsplit('/', 1)[0]}/step_{step_number}.png" \
+            if not step_result.evidence_url.endswith(".png") \
+            else step_result.evidence_url
+        try:
+            async with s3_client.get_client() as client:
+                s3_resp = await client.get_object(
+                    Bucket=settings.minio_default_bucket, Key=key
+                )
+                screenshot = await s3_resp["Body"].read()
+        except Exception:
+            pass
+
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI repair requires an OpenAI API key",
+        )
+
+    suggestions = await _run_repair_in_thread(
+        step_number=step_number,
+        action=step_result.action,
+        expected=step_result.expected,
+        actual=step_result.actual,
+        error_message=step_result.error_message,
+        generated_code=step_result.generated_code,
+        screenshot_bytes=screenshot,
+        api_key=settings.openai_api_key,
+    )
+
+    return [
+        RepairSuggestionResponse(
+            type=s.type,
+            description=s.description,
+            confidence=s.confidence,
+            changes=s.changes,
+        )
+        for s in suggestions
+    ]
+
+
+async def _run_repair_in_thread(**kwargs) -> list:
+    """Run the synchronous repair engine in a thread pool to avoid blocking the event loop."""
+    import asyncio
+    from functools import partial
+    from app.intelligence.repair_engine import suggest_repairs
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, partial(suggest_repairs, **kwargs))
+
+
 class ValidateIntentRequest(BaseModel):
     intent_json: str
 

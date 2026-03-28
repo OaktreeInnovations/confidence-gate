@@ -7,6 +7,7 @@ import { apiGet, apiPut, apiPost, apiDelete } from "@/lib/api-client";
 import { useAuth } from "@/contexts/auth-context";
 import { runStatusBadgeVariant, stepStatusBadgeVariant, formatDuration } from "@/lib/test-run-utils";
 import { Badge } from "@/components/ui/badge";
+import { RepairSuggestionPanel } from "@/components/repair/repair-suggestion-panel";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -273,6 +274,8 @@ function ErrorAnalysisTabs({
   errorMessage,
   generatedCode,
   stepNumber,
+  testRunId,
+  testCaseId,
   onSaveAndRerun,
   saving,
   saveMessage,
@@ -280,11 +283,13 @@ function ErrorAnalysisTabs({
   errorMessage: string;
   generatedCode: string;
   stepNumber: number;
+  testRunId: string;
+  testCaseId: string;
   onSaveAndRerun: (stepNumber: number, code: string) => void;
   saving: boolean;
   saveMessage: { text: string; ok: boolean } | null;
 }) {
-  const [activeTab, setActiveTab] = useState<"error" | "trace" | "cause" | "fix" | "edit">("error");
+  const [activeTab, setActiveTab] = useState<"error" | "trace" | "cause" | "fix" | "edit" | "ai-repair">("error");
   const [editedIntent, setEditedIntent] = useState(() => {
     try { return JSON.stringify(JSON.parse(generatedCode), null, 2); }
     catch { return generatedCode; }
@@ -299,6 +304,7 @@ function ErrorAnalysisTabs({
     { key: "cause" as const, label: "Cause" },
     { key: "fix" as const, label: "Fix" },
     { key: "edit" as const, label: "Edit Intent" },
+    { key: "ai-repair" as const, label: "✦ AI Repair" },
   ];
 
   const isValidJson = (() => {
@@ -377,6 +383,17 @@ function ErrorAnalysisTabs({
               )}
             </div>
           </div>
+        )}
+        {activeTab === "ai-repair" && (
+          <RepairSuggestionPanel
+            testRunId={testRunId}
+            testCaseId={testCaseId}
+            stepNumber={stepNumber}
+            onApplyAndRerun={(sn, overrideIntent) =>
+              onSaveAndRerun(sn, overrideIntent ?? editedIntent)
+            }
+            savingRerun={saving}
+          />
         )}
       </div>
     </div>
@@ -1188,6 +1205,8 @@ export default function TestRunDetailPage() {
                             errorMessage={result.error_message}
                             generatedCode={result.generated_code}
                             stepNumber={result.step_number}
+                            testRunId={testRun.id}
+                            testCaseId={testRun.test_case_id}
                             onSaveAndRerun={handleSaveAndRerun}
                             saving={savingStep === result.step_number}
                             saveMessage={saveMessage?.step === result.step_number ? saveMessage : null}

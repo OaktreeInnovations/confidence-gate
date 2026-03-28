@@ -56,19 +56,63 @@ import re as _re
 _TEMPLATE_RE = _re.compile(r"\$\{(\w+)\}")
 
 
+def _builtin_token(key: str) -> str | None:
+    """Return a generated value for built-in dynamic tokens, or None if not a built-in."""
+    import uuid as _uuid
+    import random as _random
+    import string as _string
+    from datetime import date as _date
+
+    if key == "uuid":
+        return str(_uuid.uuid4())
+    if key == "timestamp":
+        import time as _time
+        return str(int(_time.time()))
+    if key == "date":
+        return _date.today().isoformat()
+    if key == "random_int":
+        return str(_random.randint(100000, 999999))
+    if key == "random_string":
+        return "".join(_random.choices(_string.ascii_lowercase + _string.digits, k=8))
+    if key == "random_email":
+        suffix = "".join(_random.choices(_string.ascii_lowercase + _string.digits, k=6))
+        return f"test_{suffix}@example.com"
+    if key == "random_name":
+        suffix = "".join(_random.choices(_string.ascii_lowercase + _string.digits, k=6))
+        return f"User_{suffix}"
+    return None
+
+
 def _resolve_templates(intent: StepIntent, test_data: dict[str, str] | None) -> None:
     """Resolve ${key} template references in intent action values.
 
-    Mutates intent in-place, replacing any "${key}" patterns in action
-    values with the corresponding test_data value. This allows the AI
-    to reference test data without embedding special characters in JSON.
+    Supports two sources (in priority order):
+    1. Built-in dynamic tokens (${uuid}, ${timestamp}, ${date}, ${random_email},
+       ${random_name}, ${random_int}, ${random_string}) — generated fresh each run.
+    2. Test data key-value pairs defined on the test case.
+
+    Mutates intent in-place.
     """
-    if not test_data:
-        return
+    # Cache generated values per token so the same token produces the same value
+    # within a single step execution (e.g. two ${uuid} refs get the same UUID).
+    _generated: dict[str, str] = {}
+
+    def _resolve_key(key: str) -> str:
+        if key in _generated:
+            return _generated[key]
+        # Built-in tokens take priority over test_data keys
+        built_in = _builtin_token(key)
+        if built_in is not None:
+            _generated[key] = built_in
+            return built_in
+        # Fall back to static test_data
+        if test_data and key in test_data:
+            return test_data[key]
+        return f"${{{key}}}"  # unresolved — leave as-is
+
     def _sub(s: str) -> str:
-        return _TEMPLATE_RE.sub(
-            lambda m: test_data.get(m.group(1), m.group(0)), s,
-        )
+        return _TEMPLATE_RE.sub(lambda m: _resolve_key(m.group(1)), s)
+
     for action in intent.actions:
         if action.value and _TEMPLATE_RE.search(action.value):
             action.value = _sub(action.value)
@@ -806,8 +850,28 @@ def execute_step(
 
     # Filter test_data for the prompt — AI only sees keys relevant to this step
     prompt_test_data = _filter_test_data_for_step(test_data, action)
+    page_context: dict = {}  # populated lazily — may be set in AI gen block or pre-validate
 
-    # Generate intent if not cached
+    # Quick Capture bypass: custom_code contains a pre-built StepIntent JSON
+    # Skip AI generation entirely — the captured intent is already structured.
+    if intent is None and custom_code:
+        try:
+            intent = StepIntent.from_json_str(custom_code)
+            is_cached = True  # treat as "cached" — no AI call needed
+            if tel:
+                tel.set_reused_code(True, "captured")
+            logger.info(
+                "structured.using_captured_intent",
+                step=step_number,
+            )
+        except Exception:
+            logger.warning(
+                "structured.captured_intent_parse_failed",
+                step=step_number,
+            )
+            # Fall through to AI generation
+
+    # Generate intent if not cached or captured
     if intent is None:
         ai_available = ai_client is not None and gate.can_call("intent_gen")
 
@@ -894,6 +958,11 @@ def execute_step(
     # was written) and we must regenerate rather than execute blindly.
     _pre_validate_regen_reason = "pre_validate_failed" if not is_cached else "cached_intent_stale"
     if ai_client is not None and gate.can_call("intent_regen"):
+        if not page_context:
+            try:
+                page_context = _capture_page_context(page, action_hint=action)
+            except Exception:
+                page_context = {}
         validation_feedback = _pre_validate_intent(intent, page_context, page=page)
         if validation_feedback:
             if is_cached:
@@ -1059,7 +1128,7 @@ def execute_step(
                     used=stability_metrics.get("disambiguation_used", False),
                     layer=stability_metrics.get("disambiguation_layer", ""),
                 )
-                tel.record_budget_breakdown(budget.phase_summary())
+                tel.record_budget_breakdown(budget.get_breakdown())
 
             # --- Behavior-failure healing path ---
             # execute_intent() returned success=True but behavior detection
@@ -1229,7 +1298,7 @@ def execute_step(
             if not diagnosis.is_recoverable:
                 if tel:
                     tel.record_attempt(attempt + 1, False, intent_json, exec_ms, str(e)[:500])
-                    tel.record_budget_breakdown(budget.phase_summary())
+                    tel.record_budget_breakdown(budget.get_breakdown())
                 break
 
             if attempt < max_retries - 1:
@@ -1551,8 +1620,16 @@ def execute_step(
             if _exp_words:
                 _match_count = sum(1 for w in _exp_words if w in _act_lower)
                 _match_ratio = _match_count / len(_exp_words)
-                # High-confidence override: ≥0.90 ratio AND at least 3 matched words
-                if _match_ratio >= 0.90 and _match_count >= 3:
+                # Check for explicit negation — keywords appearing in a negative context
+                # (e.g. "there is no table", "no columns visible") must not override to passed.
+                _negation_phrases = [
+                    'there is no', 'there are no', 'not visible', 'not displayed',
+                    'no table', 'no column', 'not shown', 'cannot be seen', 'is not shown',
+                    'does not show', 'not present', 'no data', 'not found',
+                ]
+                _has_explicit_negation = any(phrase in _act_lower for phrase in _negation_phrases)
+                # High-confidence override: ≥0.90 ratio AND at least 3 matched words AND no negation
+                if _match_ratio >= 0.90 and _match_count >= 3 and not _has_explicit_negation:
                     logger.info(
                         "structured.behavior_override_passed",
                         step=step_number,

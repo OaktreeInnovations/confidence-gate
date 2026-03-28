@@ -8,6 +8,8 @@ from app.api.test_cases.router import router as test_cases_router
 from app.api.test_runs.router import router as test_runs_router
 from app.api.intelligence.router import router as intelligence_router
 from app.api.release_validations.router import router as release_validations_router
+from app.api.capture.router import router as capture_router
+from app.api.dashboard.router import router as dashboard_router
 
 api_router = APIRouter()
 api_router.include_router(health_router, tags=["health"])
@@ -18,3 +20,5 @@ api_router.include_router(test_cases_router)
 api_router.include_router(test_runs_router)
 api_router.include_router(intelligence_router)
 api_router.include_router(release_validations_router)
+api_router.include_router(capture_router)
+api_router.include_router(dashboard_router)
