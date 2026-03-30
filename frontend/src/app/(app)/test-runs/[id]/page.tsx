@@ -451,6 +451,7 @@ export default function TestRunDetailPage() {
   const [executionProfile, setExecutionProfile] = useState<ExecutionProfile | null>(null);
   const [telemetry, setTelemetry] = useState<RunTelemetry | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const { getIdToken } = useAuth();
   const [confirmAction, setConfirmAction] = useState<{
@@ -539,6 +540,20 @@ export default function TestRunDetailPage() {
       else next.add(stepNumber);
       return next;
     });
+  }
+
+  async function handleStop() {
+    if (!testRun || stopping) return;
+    setStopping(true);
+    const { status } = await apiPost(`/api/test-runs/${id}/stop`);
+    setStopping(false);
+    if (status === 200) {
+      toast("Run stopped", "success");
+      const { data } = await apiGet<TestRun>(`/api/test-runs/${id}`);
+      setTestRun(data);
+    } else {
+      toast("Failed to stop run", "error");
+    }
   }
 
   function handleDelete() {
@@ -753,6 +768,22 @@ export default function TestRunDetailPage() {
           Back to Test Runs
         </Link>
         <div className="flex items-center gap-2">
+          {isActive && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleStop}
+              disabled={stopping}
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            >
+              {stopping ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <X className="h-3.5 w-3.5" />
+              )}
+              {stopping ? "Stopping..." : "Stop Run"}
+            </Button>
+          )}
           {!isActive && (
             <Button
               variant="outline"

@@ -757,6 +757,43 @@ async def delete_batch(
     return {"deleted": result.deleted_count}
 
 
+@router.post("/{test_run_id}/stop")
+async def stop_test_run(
+    test_run_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> dict:
+    org_id = require_org(current_user)
+    oid = parse_object_id(test_run_id)
+
+    doc = await db.test_runs.find_one({"_id": oid, "org_id": org_id}, {"status": 1, "celery_task_id": 1})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test run not found")
+
+    if doc.get("status") not in ("queued", "running"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run is not active")
+
+    celery_task_id = doc.get("celery_task_id")
+    if celery_task_id:
+        try:
+            from app.worker.celery_app import celery_app as _celery
+            _celery.control.revoke(celery_task_id, terminate=True, signal="SIGTERM")
+        except Exception:
+            pass
+
+    await db.test_runs.update_one(
+        {"_id": oid},
+        {"$set": {
+            "status": "error",
+            "error_message": "Stopped by user",
+            "completed_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    logger.info("test_run.stopped", test_run_id=test_run_id, org_id=str(org_id))
+    return {"stopped": True}
+
+
 @router.delete("/{test_run_id}")
 async def delete_test_run(
     test_run_id: str,

@@ -830,31 +830,18 @@ def execute_step(
     evidence = EvidenceCollector()
     evidence.start_step(page, step_number)
 
-    # Check code cache for cached intent
-    intent = None
-    is_cached = False
-    if cached_code and cached_code.get("last_successful_code") and cached_code.get("code_type") == "intent":
-        try:
-            intent = StepIntent.from_json_str(cached_code["last_successful_code"])
-            is_cached = True
-            if tel:
-                tel.set_reused_code(True, cached_code.get("code_hash", ""))
-            logger.info(
-                "structured.reusing_cached_intent",
-                step=step_number,
-                stability_score=cached_code.get("stability_score", 0),
-            )
-        except Exception:
-            logger.warning("structured.cache_parse_failed", step=step_number)
-            intent = None
-
     # Filter test_data for the prompt — AI only sees keys relevant to this step
     prompt_test_data = _filter_test_data_for_step(test_data, action)
     page_context: dict = {}  # populated lazily — may be set in AI gen block or pre-validate
 
+    # custom_code always takes priority — it contains template tokens (e.g. ${timestamp})
+    # that must be resolved fresh on every run. Never let the cache override it.
+    intent = None
+    is_cached = False
+
     # Quick Capture bypass: custom_code contains a pre-built StepIntent JSON
     # Skip AI generation entirely — the captured intent is already structured.
-    if intent is None and custom_code:
+    if custom_code:
         try:
             intent = StepIntent.from_json_str(custom_code)
             is_cached = True  # treat as "cached" — no AI call needed
@@ -869,9 +856,25 @@ def execute_step(
                 "structured.captured_intent_parse_failed",
                 step=step_number,
             )
-            # Fall through to AI generation
+            # Fall through to cache / AI generation
 
-    # Generate intent if not cached or captured
+    # No custom_code — check the code cache for a previously successful intent
+    if intent is None and cached_code and cached_code.get("last_successful_code") and cached_code.get("code_type") == "intent":
+        try:
+            intent = StepIntent.from_json_str(cached_code["last_successful_code"])
+            is_cached = True
+            if tel:
+                tel.set_reused_code(True, cached_code.get("code_hash", ""))
+            logger.info(
+                "structured.reusing_cached_intent",
+                step=step_number,
+                stability_score=cached_code.get("stability_score", 0),
+            )
+        except Exception:
+            logger.warning("structured.cache_parse_failed", step=step_number)
+            intent = None
+
+    # Generate intent if not captured or cached
     if intent is None:
         ai_available = ai_client is not None and gate.can_call("intent_gen")
 
