@@ -26,4 +26,8 @@ db.test_runs.createIndex({ "org_id": 1, "created_at": -1 });
 db.test_runs.createIndex({ "org_id": 1, "test_case_id": 1 });
 db.test_runs.createIndex({ "org_id": 1, "status": 1 });
 
+// 9A.8 Score mutation audit log
+db.createCollection("score_mutations");
+db.score_mutations.createIndex({ "validation_id": 1, "timestamp": 1 });
+
 print("MongoDB initialization complete: 'qualora' database created with indexes.");

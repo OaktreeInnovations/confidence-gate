@@ -54,6 +54,8 @@ export default function TestCaseDetailPage() {
   const [tagsInput, setTagsInput] = useState("");
   const [steps, setSteps] = useState<TestStep[]>([]);
   const [testData, setTestData] = useState<{ key: string; value: string }[]>([]);
+  const [isCritical, setIsCritical] = useState(false);
+  const [isInformational, setIsInformational] = useState(false);
   const [enhancing, setEnhancing] = useState(false);
   const [enhancedSteps, setEnhancedSteps] = useState<TestStep[] | null>(null);
   const [originalSteps, setOriginalSteps] = useState<TestStep[]>([]);
@@ -89,6 +91,8 @@ export default function TestCaseDetailPage() {
       ? Object.entries(tc.test_data).map(([key, value]) => ({ key, value }))
       : [];
     setTestData(tdEntries);
+    setIsCritical(tc.is_critical ?? false);
+    setIsInformational(tc.is_informational ?? false);
   }
 
   function startEditing() {
@@ -249,6 +253,8 @@ export default function TestCaseDetailPage() {
         tags,
         steps: validSteps,
         test_data: testDataObj,
+        is_critical: isCritical,
+        is_informational: isInformational,
       },
     );
 
@@ -405,6 +411,38 @@ export default function TestCaseDetailPage() {
                   value={tagsInput}
                   onChange={(e) => setTagsInput(e.target.value)}
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Designation</Label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isCritical}
+                      onChange={(e) => {
+                        setIsCritical(e.target.checked);
+                        if (e.target.checked) setIsInformational(false);
+                      }}
+                      className="accent-destructive"
+                    />
+                    <span className="text-sm font-medium text-destructive">Critical</span>
+                    <span className="text-xs text-muted-foreground">— failure always blocks release</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isInformational}
+                      onChange={(e) => {
+                        setIsInformational(e.target.checked);
+                        if (e.target.checked) setIsCritical(false);
+                      }}
+                      className="accent-warning"
+                    />
+                    <span className="text-sm font-medium text-warning">Informational</span>
+                    <span className="text-xs text-muted-foreground">— excluded from score</span>
+                  </label>
+                </div>
               </div>
 
               <div className="space-y-3">
@@ -682,7 +720,28 @@ export default function TestCaseDetailPage() {
         <Badge variant={statusBadgeVariant[testCase.status]}>
           {testCase.status}
         </Badge>
+        {testCase.is_critical && (
+          <Badge variant="destructive" className="text-[10px] font-bold tracking-wide">CRITICAL</Badge>
+        )}
+        {testCase.is_informational && (
+          <Badge variant="warning" className="text-[10px] font-bold tracking-wide">INFO</Badge>
+        )}
+        {testCase.version > 1 && (
+          <Badge variant="muted" className="text-[10px]">v{testCase.version}</Badge>
+        )}
         <FlakeBadge level={testCase.flake_badge} />
+        {testCase.quality_grade && (
+          <Badge
+            variant={
+              testCase.quality_grade === "A" ? "success" :
+              testCase.quality_grade === "B" ? "default" :
+              testCase.quality_grade === "C" ? "warning" : "destructive"
+            }
+            className="text-[10px] font-bold tracking-wide"
+          >
+            Quality {testCase.quality_grade}
+          </Badge>
+        )}
       </div>
 
       {testCase.test_type === "api" && testCase.base_url && (

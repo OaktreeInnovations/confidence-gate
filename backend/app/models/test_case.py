@@ -63,6 +63,11 @@ class TestCase(BaseModel):
     status: TestCaseStatus = TestCaseStatus.DRAFT
     tags: list[str] = Field(default_factory=list)
     test_data: dict[str, str] = Field(default_factory=dict)
+    # 1.3 Critical/Informational designation
+    is_critical: bool = False       # failure always blocks release regardless of score
+    is_informational: bool = False  # failure is a warning only; excluded from score
+    # 2.3 Versioning — incremented whenever steps change
+    version: int = 1
     created_by: ObjectId
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -9,9 +9,11 @@ logger = structlog.get_logger(__name__)
 
 def compute_coverage(telemetry_docs: dict) -> dict:
     if not telemetry_docs:
+        # 8.5 Cold-start: no telemetry yet — return None score with zero penalty
+        # so new projects are not penalized for not having execution history.
         return {
-            "coverage_score": 0,
-            "coverage_penalty": 10.0,
+            "coverage_score": None,
+            "coverage_penalty": 0.0,
             "url_diversity": 0,
             "action_diversity": 0,
         }
@@ -49,11 +51,14 @@ def compute_coverage(telemetry_docs: dict) -> dict:
 
                 unique_actions.add((action_type, target_key))
 
-        # 1. URL diversity
-        url_div_score = min(1.0, len(unique_urls) / 5.0)
+        # 1. URL diversity — scale denominator to suite size so large suites
+        #    are not penalized for already saturating the old fixed threshold.
+        url_threshold = max(5, int(total_steps * 0.1))
+        url_div_score = min(1.0, len(unique_urls) / url_threshold)
 
-        # 2. Action diversity
-        action_div_score = min(1.0, len(unique_actions) / 15.0)
+        # 2. Action diversity — same proportional scaling
+        action_threshold = max(15, int(total_steps * 0.3))
+        action_div_score = min(1.0, len(unique_actions) / action_threshold)
 
         # 3. Flow depth — average steps per test
         num_docs = len(telemetry_docs)

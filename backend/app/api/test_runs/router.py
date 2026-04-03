@@ -1024,6 +1024,40 @@ async def get_execution_profile(
 
 
 # ---------------------------------------------------------------------------
+# Full step results (3.1 — externalized from test_runs documents)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{test_run_id}/steps")
+async def get_test_run_steps(
+    test_run_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> dict:
+    """Return full step results including generated_code, sourced from test_run_steps.
+
+    Falls back to test_runs.results for legacy runs that pre-date externalization.
+    """
+    org_id = require_org(current_user)
+    oid = parse_object_id(test_run_id)
+
+    # Verify org access
+    run_doc = await db.test_runs.find_one({"_id": oid, "org_id": org_id}, {"_id": 1})
+    if not run_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test run not found")
+
+    # Primary: test_run_steps (full data)
+    steps_doc = await db.test_run_steps.find_one({"test_run_id": test_run_id, "org_id": str(org_id)})
+    if steps_doc:
+        steps_doc.pop("_id", None)
+        return {"source": "test_run_steps", "steps": steps_doc.get("steps", [])}
+
+    # Fallback: test_runs.results (lean, no generated_code)
+    full_run = await db.test_runs.find_one({"_id": oid, "org_id": org_id}, {"results": 1})
+    return {"source": "test_runs_legacy", "steps": full_run.get("results", []) if full_run else []}
+
+
+# ---------------------------------------------------------------------------
 # PDF report
 # ---------------------------------------------------------------------------
 

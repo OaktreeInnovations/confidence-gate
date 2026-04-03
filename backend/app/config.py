@@ -86,3 +86,6 @@ class Settings(BaseSettings):
 
     # Release validation
     release_validation_enabled: bool = True
+    min_runs_for_decision: int = 3
+    # 2.5 Validation SLA — 0 disables the check
+    validation_sla_minutes: int = 120

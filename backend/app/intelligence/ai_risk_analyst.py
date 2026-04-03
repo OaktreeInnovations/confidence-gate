@@ -42,6 +42,18 @@ _SYSTEM_PROMPT_WITH_PRD = (
     "Be precise. Cite specific PRD sections when explaining gaps. No markdown."
 )
 
+_SYSTEM_PROMPT_REQUIREMENTS = (
+    "You are a QA analyst. Extract discrete, testable requirements from the PRD text below, "
+    "then assess whether each one is covered by the given test execution summary.\n\n"
+    "Return a JSON object with a single key:\n"
+    "  requirements: list of objects, each with:\n"
+    "    requirement (string): one concise requirement statement (≤120 chars)\n"
+    "    covered (bool): true if the tests provide evidence this requirement was exercised\n"
+    "    evidence (string|null): brief note on what test covers it, or why it is missing\n\n"
+    "Extract at most 10 requirements. Focus on user-facing functionality, not implementation details. "
+    "No markdown. Return only the JSON."
+)
+
 
 def _build_prompt(report_dict: dict, context: dict) -> str:
     """Build the AI prompt.
@@ -99,6 +111,45 @@ def _build_prompt(report_dict: dict, context: dict) -> str:
     return "\n".join(lines)
 
 
+def _extract_requirement_coverage(
+    prd_text: str,
+    test_summary: str,
+    client: "OpenAI",  # type: ignore[name-defined]
+) -> list[dict]:
+    """Return structured requirement coverage for the PRD. Non-fatal — returns [] on any error."""
+    try:
+        user_prompt = (
+            f"--- TEST EXECUTION SUMMARY ---\n{test_summary}\n\n"
+            f"--- PRD ---\n{prd_text[:2000]}\n--- END PRD ---"
+        )
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.0,
+            max_tokens=800,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT_REQUIREMENTS},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        raw = response.choices[0].message.content or "{}"
+        data = json.loads(raw)
+        reqs = data.get("requirements", [])
+        # Validate and clamp
+        result = []
+        for r in reqs[:10]:
+            if isinstance(r, dict) and "requirement" in r:
+                result.append({
+                    "requirement": str(r.get("requirement", ""))[:120],
+                    "covered": bool(r.get("covered", False)),
+                    "evidence": str(r["evidence"])[:200] if r.get("evidence") else None,
+                })
+        return result
+    except Exception as e:
+        logger.warning("ai_risk_analyst.requirement_coverage_error", error=str(e)[:200])
+        return []
+
+
 def analyze_with_ai(report_dict: dict, context: dict, api_key: str) -> dict:
     _default = {
         "ai_adjustment": 0,
@@ -148,11 +199,36 @@ def analyze_with_ai(report_dict: dict, context: dict, api_key: str) -> dict:
             ai_confidence=data.get("confidence", 0.0),
         )
 
+        # 7B.4 Requirement traceability — second AI call only when PRD is present
+        requirement_coverage: list[dict] = []
+        if has_prd:
+            test_summary = prompt[:500]  # concise summary of execution state
+            requirement_coverage = _extract_requirement_coverage(prd_text, test_summary, client)
+
+        batch = report_dict.get("batch_summary", {})
         return {
             "ai_adjustment": adjustment,
             "ai_confidence": float(data.get("confidence", 0.0)),
             "ai_insights": list(data.get("insights", [])),
             "risk_explanations": list(data.get("risk_explanations", [])),
+            "requirement_coverage": requirement_coverage,
+            # Audit detail — stored on the validation document
+            "ai_adjustment_detail": {
+                "model": "gpt-4o-mini",
+                "has_prd": has_prd,
+                "raw_adjustment": int(data.get("adjustment", 0)),
+                "clamped_adjustment": adjustment,
+                "ai_confidence": float(data.get("confidence", 0.0)),
+                "input_signals": {
+                    "pre_ai_score": report_dict.get("confidence_score", 0),
+                    "pass_rate": round(batch.get("pass_rate", 0), 3),
+                    "instability_index": report_dict.get("instability_index", 0),
+                    "coverage_score": report_dict.get("coverage_score", 0),
+                    "trend": report_dict.get("trend", "stable"),
+                },
+                "insights": list(data.get("insights", [])),
+                "risk_explanations": list(data.get("risk_explanations", [])),
+            },
         }
 
     except Exception as e:

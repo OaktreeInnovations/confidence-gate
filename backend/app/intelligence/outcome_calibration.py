@@ -19,22 +19,31 @@ def _bucket_index(score: int) -> int:
 
 
 def compute_failure_probability(score: int, db: Database) -> dict:
+    score = max(0, min(100, score))
+    idx = _bucket_index(score)
+
+    # Cache per bucket — calibration curves change only nightly
+    from app.intelligence import cache as _cache
+    cache_key = f"cg:calibration:{idx}"
+    cached = _cache.get(cache_key)
+    if cached and isinstance(cached, dict):
+        return cached
+
     try:
         outcomes = list(db.production_outcomes.find({}))
     except Exception as e:
         logger.warning("outcome_calibration.query_failed", error=str(e)[:200])
         outcomes = []
 
-    score = max(0, min(100, score))
-    idx = _bucket_index(score)
-
     if len(outcomes) < 5:
         real_data_fraction = len(outcomes) / 5.0
-        return {
+        result = {
             "predicted_failure_probability": _DEFAULT_PROBS[idx],
             "calibration_confidence": 0.1 + real_data_fraction * 0.5,
             "calibration_source": "default",
         }
+        _cache.set(cache_key, result, ttl=300)
+        return result
 
     # Group outcomes by bucket
     bucket_totals = [0] * len(_BUCKETS)
@@ -50,19 +59,22 @@ def compute_failure_probability(score: int, db: Database) -> dict:
 
     bucket_count = bucket_totals[idx]
     if bucket_count == 0:
-        # Fall back to default for empty bucket
         real_data_fraction = len(outcomes) / 50.0
-        return {
+        result = {
             "predicted_failure_probability": _DEFAULT_PROBS[idx],
             "calibration_confidence": 0.1 + real_data_fraction * 0.5,
             "calibration_source": "default_empty_bucket",
         }
+        _cache.set(cache_key, result, ttl=300)
+        return result
 
     failure_prob = bucket_failures[idx] / bucket_count
     calibration_confidence = min(1.0, len(outcomes) / 50.0)
 
-    return {
+    result = {
         "predicted_failure_probability": round(failure_prob, 4),
         "calibration_confidence": round(calibration_confidence, 4),
         "calibration_source": "historical",
     }
+    _cache.set(cache_key, result, ttl=300)
+    return result

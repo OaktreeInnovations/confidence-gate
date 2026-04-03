@@ -35,6 +35,8 @@ async def get_dashboard(
         profiles_docs,
         stuck_runs_docs,
         latest_releases_docs,
+        regression_alerts_docs,
+        outcome_rate_docs,
     ) = await asyncio.gather(
         # 1. Recent 10 runs
         db.test_runs.find(
@@ -73,6 +75,23 @@ async def get_dashboard(
             {"_id": 1, "project_name": 1, "confidence_score": 1,
              "confidence_grade": 1, "recommendation": 1, "created_at": 1},
         ).sort("created_at", -1).limit(50).to_list(50),
+
+        # 6. Regression alerts for this org
+        db.project_alerts.find(
+            {"org_id": org_id},
+            {"_id": 1, "project_id": 1, "alert_type": 1, "severity": 1,
+             "title": 1, "detail": 1, "updated_at": 1},
+        ).sort("updated_at", -1).limit(20).to_list(20),
+
+        # 7. 8.6 Outcome recording rate — completed validations with/without outcomes
+        db.release_validations.aggregate([
+            {"$match": {"org_id": org_id, "status": "completed"}},
+            {"$group": {
+                "_id": None,
+                "total": {"$sum": 1},
+                "with_outcome": {"$sum": {"$cond": [{"$ifNull": ["$outcome", False]}, 1, 0]}},
+            }},
+        ]).to_list(1),
     )
 
     # --- Recent runs ---
@@ -174,11 +193,50 @@ async def get_dashboard(
         for r in stuck_runs_docs
     ]
 
+    # --- Regression alerts ---
+    # Enrich with project names
+    alert_project_ids = list({str(a["project_id"]) for a in regression_alerts_docs if a.get("project_id")})
+    alert_project_names: dict[str, str] = {}
+    if alert_project_ids:
+        from bson import ObjectId
+        ap_docs = await db.projects.find(
+            {"_id": {"$in": [ObjectId(pid) for pid in alert_project_ids]}},
+            {"_id": 1, "name": 1},
+        ).to_list(len(alert_project_ids))
+        alert_project_names = {str(d["_id"]): d.get("name", "") for d in ap_docs}
+
+    regression_alerts = [
+        {
+            "id": str(a["_id"]),
+            "project_id": str(a["project_id"]),
+            "project_name": alert_project_names.get(str(a["project_id"]), ""),
+            "alert_type": a.get("alert_type", ""),
+            "severity": a.get("severity", "warning"),
+            "title": a.get("title", ""),
+            "detail": a.get("detail", ""),
+            "updated_at": a["updated_at"].isoformat() if a.get("updated_at") else None,
+        }
+        for a in regression_alerts_docs
+    ]
+
+    # --- 8.6 Outcome recording rate ---
+    _or = outcome_rate_docs[0] if outcome_rate_docs else None
+    outcome_recording_rate = (
+        round(_or["with_outcome"] / _or["total"], 3)
+        if _or and _or.get("total", 0) > 0
+        else None
+    )
+
     return {
         "recent_runs": recent_runs,
         "flaky_tests": flaky,
         "project_health": project_health,
         "stuck_runs": stuck_runs,
+        "regression_alerts": regression_alerts,
+        # 8.6 Learning loop health metric
+        "outcome_recording_rate": outcome_recording_rate,
+        "outcome_recording_total": _or["total"] if _or else 0,
+        "outcome_recording_with_outcome": _or["with_outcome"] if _or else 0,
     }
 
 

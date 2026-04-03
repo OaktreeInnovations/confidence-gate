@@ -5,6 +5,12 @@ export interface Project {
   description: string;
   base_url: string;
   global_setup: string;
+  webhook_url: string;
+  git_repo_url: string;
+  release_approvers: string[];
+  // 8.3 Configurable gate thresholds
+  inconclusive_gate_pct: number | null;
+  behavior_override_pct: number | null;
   created_by: string;
   created_at: string;
   updated_at: string;

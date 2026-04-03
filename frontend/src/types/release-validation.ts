@@ -3,7 +3,11 @@ export type ReleaseValidationStatus =
   | "running"
   | "computing"
   | "completed"
-  | "failed";
+  | "failed"
+  | "cancelled"
+  | "awaiting_approval"
+  | "approved"
+  | "rejected";
 
 export interface ReleaseValidation {
   id: string;
@@ -31,6 +35,64 @@ export interface ReleaseValidation {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  // 1.4 Score freeze
+  final_score_at_decision: number | null;
+  decision_at: string | null;
+  score_frozen: boolean;
+  // 1.2 Override audit trail
+  override_by: string | null;
+  override_reason: string | null;
+  override_at: string | null;
+  override_type: "ship_anyway" | "acknowledge_risk" | null;
+  original_decision: string | null;
+  // 2.4 Production outcome
+  outcome: "production_passed" | "production_failed" | "rolled_back" | null;
+  outcome_recorded_at: string | null;
+  outcome_notes: string | null;
+  // 2.5 Validation SLA
+  sla_minutes: number;
+  sla_breached: boolean;
+  sla_breached_at: string | null;
+  // 3.1 Change-aware selection
+  changed_areas: string[];
+  targeted_selection: boolean;
+  // 3.5 Approval workflow
+  approval_required: boolean;
+  approved_by: string | null;
+  approved_at: string | null;
+  rejected_by: string | null;
+  rejected_at: string | null;
+  rejection_reason: string | null;
+  // Task error
+  error_message: string | null;
+  // 5.1 AI adjustment audit
+  ai_adjustment_detail: {
+    model: string;
+    has_prd: boolean;
+    raw_adjustment: number;
+    clamped_adjustment: number;
+    ai_confidence: number;
+    input_signals: { pre_ai_score: number; pass_rate: number; instability_index: number; coverage_score: number; trend: string };
+    insights: string[];
+    risk_explanations: string[];
+  } | null;
+  // 2.3 Prediction accuracy
+  predicted_score_pre_run: number | null;
+  prediction_accuracy: number | null;
+  // 3.3 Webhook delivery
+  webhook_delivery_status: "pending" | "delivered" | "failed" | null;
+  webhook_last_attempt_at: string | null;
+  // 8.1 Score degradation
+  score_degraded: boolean;
+  degraded_engines: string[];
+  // 7C.2 Incident signal attribution
+  incident_signal_attribution: Array<{
+    signal: string;
+    value: number;
+    org_mean: number;
+    z_score: number;
+    direction: "high" | "low";
+  }> | null;
 }
 
 export interface ReleaseReport {
@@ -88,6 +150,33 @@ export interface ReleaseReport {
     next_steps: string[];
     ai_generated: boolean;
   };
+  // 2.1 Actionable failure surface
+  actionable_steps?: ActionableStep[];
+  // Hard gate results
+  gate_blocks?: string[];
+  gate_warnings?: string[];
+  insufficient_data?: boolean;
+  // 2.1 Assertion coverage
+  no_assertion_tests?: string[];
+  // 6.1 Route coverage
+  route_coverage?: {
+    batch_routes: string[];
+    known_routes: string[];
+    coverage_pct: number | null;
+  };
+  // 7B.4 PRD requirement traceability
+  requirement_coverage?: Array<{
+    requirement: string;
+    covered: boolean;
+    evidence: string | null;
+  }>;
+}
+
+export interface ActionableStep {
+  priority: "critical" | "high" | "medium";
+  title: string;
+  detail: string;
+  action: string;
 }
 
 export interface ReleaseSignal {

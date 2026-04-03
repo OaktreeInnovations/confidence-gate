@@ -59,6 +59,8 @@ class CreateTestCaseRequest(BaseModel):
     status: TestCaseStatus = TestCaseStatus.DRAFT
     tags: list[str] = Field(default_factory=list)
     test_data: dict[str, str] = Field(default_factory=dict)
+    is_critical: bool = False
+    is_informational: bool = False
 
 
 class UpdateTestCaseRequest(BaseModel):
@@ -72,6 +74,8 @@ class UpdateTestCaseRequest(BaseModel):
     status: TestCaseStatus | None = None
     tags: list[str] | None = None
     test_data: dict[str, str] | None = None
+    is_critical: bool | None = None
+    is_informational: bool | None = None
 
 
 class ApiStepConfigResponse(BaseModel):
@@ -106,10 +110,14 @@ class TestCaseResponse(BaseModel):
     status: TestCaseStatus
     tags: list[str]
     test_data: dict[str, str]
+    is_critical: bool = False
+    is_informational: bool = False
+    version: int = 1
     created_by: str
     created_at: str
     updated_at: str
     flake_badge: str | None = None
+    quality_grade: str | None = None  # A/B/C/D from test quality score (3.2)
 
     @classmethod
     def from_test_case(cls, tc: TestCase) -> "TestCaseResponse":
@@ -144,6 +152,9 @@ class TestCaseResponse(BaseModel):
             status=tc.status,
             tags=tc.tags,
             test_data=tc.test_data,
+            is_critical=tc.is_critical,
+            is_informational=tc.is_informational,
+            version=tc.version,
             created_by=str(tc.created_by),
             created_at=tc.created_at.isoformat(),
             updated_at=tc.updated_at.isoformat(),
@@ -301,6 +312,8 @@ async def create_test_case(
         status=body.status,
         tags=body.tags,
         test_data=body.test_data,
+        is_critical=body.is_critical,
+        is_informational=body.is_informational,
         created_by=current_user.id,
         created_at=now,
         updated_at=now,
@@ -358,6 +371,20 @@ async def generate_test_cases(
     if sample_tc and isinstance(sample_tc.get("test_data"), dict):
         test_data_keys = list(sample_tc["test_data"].keys())
 
+    # Enrich prd with extracted text from project documents
+    enriched_prd = body.prd or ""
+    try:
+        doc_cursor = db.project_documents.find(
+            {"project_id": project_oid, "org_id": org_id, "extracted_text": {"$ne": ""}},
+            {"name": 1, "extracted_text": 1},
+        ).limit(10)
+        async for d in doc_cursor:
+            text = (d.get("extracted_text") or "").strip()
+            if text:
+                enriched_prd += f"\n\n[Document: {d['name']}]\n{text[:8000]}"
+    except Exception:
+        pass
+
     loop = asyncio.get_running_loop()
     try:
         drafts, gen_warnings = await loop.run_in_executor(
@@ -372,7 +399,7 @@ async def generate_test_cases(
                 project_description=project.description,
                 test_data_keys=test_data_keys if test_data_keys else None,
                 model=settings.openai_model,
-                prd=body.prd,
+                prd=enriched_prd,
                 srs=body.srs,
                 existing_test_cases=body.existing_test_cases,
                 screenshots=body.screenshots if body.screenshots else None,
@@ -505,7 +532,7 @@ async def list_test_cases(
     if tc_ids:
         profiles = await db.execution_profiles.find(
             {"test_case_id": {"$in": tc_ids}, "org_id": str(org_id)},
-            {"test_case_id": 1, "flake_report.overall_flake_score": 1},
+            {"test_case_id": 1, "flake_report.overall_flake_score": 1, "quality_grade": 1},
         ).to_list(length=len(tc_ids))
         profile_map = {p["test_case_id"]: p for p in profiles}
         for item in items:
@@ -513,6 +540,7 @@ async def list_test_cases(
             if profile:
                 score = profile.get("flake_report", {}).get("overall_flake_score", 0)
                 item.flake_badge = _compute_flake_badge(score)
+                item.quality_grade = profile.get("quality_grade")
 
     return TestCaseListResponse(
         items=items,
@@ -540,6 +568,12 @@ async def get_test_case(
 
     resp = TestCaseResponse.from_test_case(TestCase(**doc))
     resp.flake_badge = await _get_flake_badge(db, test_case_id, str(org_id))
+    profile = await db.execution_profiles.find_one(
+        {"test_case_id": test_case_id, "org_id": str(org_id)},
+        {"quality_grade": 1},
+    )
+    if profile:
+        resp.quality_grade = profile.get("quality_grade")
     return resp
 
 
@@ -649,6 +683,10 @@ async def update_test_case(
         update_data["tags"] = body.tags
     if body.test_data is not None:
         update_data["test_data"] = body.test_data
+    if body.is_critical is not None:
+        update_data["is_critical"] = body.is_critical
+    if body.is_informational is not None:
+        update_data["is_informational"] = body.is_informational
 
     if not update_data:
         raise HTTPException(
@@ -658,9 +696,14 @@ async def update_test_case(
 
     update_data["updated_at"] = datetime.now(timezone.utc)
 
+    mongo_update: dict = {"$set": update_data}
+    # 2.3 Increment version whenever steps change
+    if body.steps is not None:
+        mongo_update["$inc"] = {"version": 1}
+
     result = await db.test_cases.find_one_and_update(
         {"_id": oid, "org_id": org_id},
-        {"$set": update_data},
+        mongo_update,
         return_document=ReturnDocument.AFTER,
     )
     if not result:

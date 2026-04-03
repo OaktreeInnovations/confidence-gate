@@ -137,22 +137,31 @@ def _score_to_grade(score: int) -> str:
     return "F"
 
 
-def _score_to_recommendation(score: int, blockers: list[str]) -> tuple[str, list[str]]:
-    """Determine recommendation and reasons — SAFE≥85, CAUTION≥60, BLOCK<60."""
+def _score_to_recommendation(
+    score: int,
+    blockers: list[str],
+    deploy_threshold: int = 85,
+    caution_threshold: int = 60,
+) -> tuple[str, list[str]]:
+    """Determine recommendation and reasons.
+
+    Default thresholds: DEPLOY≥85, CAUTION≥60, BLOCK<60.
+    Callers can pass learned per-org thresholds from weight_learner.
+    """
     reasons: list[str] = []
 
     if blockers:
         reasons.extend(blockers)
 
-    if score >= 85 and not blockers:
+    if score >= deploy_threshold and not blockers:
         reasons.append(f"Confidence score {score}/100 — execution is stable and ready to deploy")
         return "deploy", reasons
 
-    if score >= 60 and len(blockers) <= 1:
+    if score >= caution_threshold and len(blockers) <= 1:
         reasons.append(f"Confidence score {score}/100 — review flagged signals before deploying")
         return "caution", reasons
 
-    reasons.append(f"Confidence score {score}/100 is below safe threshold (85)")
+    reasons.append(f"Confidence score {score}/100 is below safe threshold ({deploy_threshold})")
     return "block", reasons
 
 
@@ -211,6 +220,7 @@ def compute_release_report(
         "pass_rate": round(batch_pass_rate, 4),
     }
 
+
     # Build per-run results
     run_id_to_doc: dict[str, dict] = {}
     tc_ids_in_batch: set[str] = set()
@@ -264,11 +274,13 @@ def compute_release_report(
 
     # Flake rates
     flake_rates: list[float] = []
+    tc_flake_map: dict[str, float] = {}  # 8.2: per-test-case flake rate for weighted scoring
     for tc_id in tc_ids_in_batch:
         profile = profiles.get(tc_id)
         if profile:
             fr = profile.get("flake_rate", 0.0)
             flake_rates.append(fr)
+            tc_flake_map[tc_id] = fr
             if fr > 0.2:
                 report.flaky_tests.append({
                     "test_case_id": tc_id,
@@ -280,6 +292,20 @@ def compute_release_report(
     avg_flake_rate = sum(flake_rates) if flake_rates else 0.0
     if flake_rates:
         avg_flake_rate = sum(flake_rates) / len(flake_rates)
+
+    # 8.2 Flaky-weighted pass rate: weight each run's pass contribution by
+    # max(0, 1 - flake_rate) so high-flake tests don't drag the score unfairly.
+    # Raw batch_pass_rate is preserved in batch_summary for display.
+    _w_passed = 0.0
+    _w_total = 0.0
+    for r in runs:
+        tc_id = str(r.get("test_case_id", ""))
+        fr = tc_flake_map.get(tc_id, 0.0)
+        weight = max(0.0, 1.0 - fr)
+        _w_total += weight
+        if r.get("status") == "passed":
+            _w_passed += weight
+    weighted_pass_rate = (_w_passed / _w_total) if _w_total > 0 else batch_pass_rate
 
     # Timing anomalies
     timing_anomaly_count = 0
@@ -370,12 +396,16 @@ def compute_release_report(
     report.healing_penalty = healing_penalty
 
     # --- 6. Check V2 historical data availability ---
-    # V2 activates when at least 1 test case has ≥3 historical runs in its profile
+    # 9A.4 V2 activates when ≥50% of test cases have ≥3 historical runs in their profile.
+    # A single test case with history shouldn't drive historical signals for the whole suite.
     profiles_with_history = [
         p for p in profiles.values()
         if p.get("total_runs", 0) >= 3
     ]
-    use_v2 = len(profiles_with_history) >= 1
+    use_v2 = (
+        len(profiles_with_history) >= 1
+        and len(profiles_with_history) / max(len(profiles), 1) >= 0.5
+    )
 
     # --- 7. Compute weighted signals ---
     signals: list[ReleaseSignal] = []
@@ -385,15 +415,31 @@ def compute_release_report(
     ]
     flaky_test_names = [ft.get("test_case_id", "") for ft in report.flaky_tests]
 
+    # Load dynamic weights (7C.1); fall back to hardcoded defaults on any error.
+    try:
+        from app.intelligence.global_weight_optimizer import load_global_weights
+        gw = load_global_weights(db)
+    except Exception:
+        gw = {"exec": 0.30, "flake": 0.20, "perf": 0.15, "selector": 0.15, "behavior": 0.20}
+
     if use_v2:
         # V2 weights: exec 25%, flake 15%, perf 10%, selector 10%, behavior 15%,
         #             historical 15%, trend 10%
+        # Dynamic weights from 7C.1 are blended with V2 scaling (which adds historical/trend).
+        # Scale exec/flake/perf/selector/behavior to sum to 0.75, leaving 0.25 for hist+trend.
+        v2_base_total = gw["exec"] + gw["flake"] + gw["perf"] + gw["selector"] + gw["behavior"]
+        v2_scale = 0.75 / v2_base_total if v2_base_total > 0 else 1.0
+        w_exec = gw["exec"] * v2_scale
+        w_flake = gw["flake"] * v2_scale
+        w_perf = gw["perf"] * v2_scale
+        w_sel = gw["selector"] * v2_scale
+        w_beh = gw["behavior"] * v2_scale
 
         signals.append(ReleaseSignal(
             name="Execution Stability",
             category="execution",
-            severity=_severity_from_value(batch_pass_rate, 0.9, 0.7),
-            score_contribution=0.25 * batch_pass_rate * 100,
+            severity=_severity_from_value(weighted_pass_rate, 0.9, 0.7),
+            score_contribution=w_exec * weighted_pass_rate * 100,
             detail=f"Batch pass rate: {batch_pass_rate:.0%} ({passed}/{total} tests passed)",
             affected_tests=failed_tests,
         ))
@@ -402,7 +448,7 @@ def compute_release_report(
             name="Flakiness",
             category="flakiness",
             severity=_severity_from_value(1.0 - max_flake_rate, 0.8, 0.5),
-            score_contribution=0.15 * max(0, 1.0 - max_flake_rate) * 100,
+            score_contribution=w_flake * max(0, 1.0 - max_flake_rate) * 100,
             detail=f"Max flake rate: {max_flake_rate:.0%}, avg: {avg_flake_rate:.0%} across {len(flake_rates)} test cases",
             affected_tests=flaky_test_names,
         ))
@@ -411,7 +457,7 @@ def compute_release_report(
             name="Performance",
             category="timing",
             severity=_severity_from_value(1.0 - timing_anomaly_density, 0.85, 0.6),
-            score_contribution=0.10 * max(0, 1.0 - timing_anomaly_density) * 100,
+            score_contribution=w_perf * max(0, 1.0 - timing_anomaly_density) * 100,
             detail=f"{timing_anomaly_count} timing anomalies across {total_steps_checked} steps ({timing_anomaly_density:.0%})",
             affected_tests=[a["test_case_id"] for a in report.timing_anomalies[:5]],
         ))
@@ -420,7 +466,7 @@ def compute_release_report(
             name="Selector Confidence",
             category="selector",
             severity=_severity_from_value(avg_selector_confidence, 0.85, 0.6),
-            score_contribution=0.10 * avg_selector_confidence * 100,
+            score_contribution=w_sel * avg_selector_confidence * 100,
             detail=f"Average selector success rate: {avg_selector_confidence:.0%}",
         ))
 
@@ -428,7 +474,7 @@ def compute_release_report(
             name="Behavior Confidence",
             category="behavior",
             severity=_severity_from_value(behavior_confidence, 0.9, 0.7),
-            score_contribution=0.15 * behavior_confidence * 100,
+            score_contribution=w_beh * behavior_confidence * 100,
             detail=f"Behavior verification success: {behavior_confidence:.0%} ({total_behavior_steps} steps checked)",
         ))
 
@@ -482,13 +528,12 @@ def compute_release_report(
         report.score_version = "v2"
 
     else:
-        # V1 weights: exec 30%, flake 20%, perf 15%, selector 15%, behavior 20%
-
+        # V1 weights: exec/flake/perf/selector/behavior from global learner (7C.1).
         signals.append(ReleaseSignal(
             name="Execution Stability",
             category="execution",
-            severity=_severity_from_value(batch_pass_rate, 0.9, 0.7),
-            score_contribution=0.30 * batch_pass_rate * 100,
+            severity=_severity_from_value(weighted_pass_rate, 0.9, 0.7),
+            score_contribution=gw["exec"] * weighted_pass_rate * 100,
             detail=f"Batch pass rate: {batch_pass_rate:.0%} ({passed}/{total} tests passed)",
             affected_tests=failed_tests,
         ))
@@ -497,7 +542,7 @@ def compute_release_report(
             name="Flakiness",
             category="flakiness",
             severity=_severity_from_value(1.0 - max_flake_rate, 0.8, 0.5),
-            score_contribution=0.20 * max(0, 1.0 - max_flake_rate) * 100,
+            score_contribution=gw["flake"] * max(0, 1.0 - max_flake_rate) * 100,
             detail=f"Max flake rate: {max_flake_rate:.0%}, avg: {avg_flake_rate:.0%} across {len(flake_rates)} test cases",
             affected_tests=flaky_test_names,
         ))
@@ -506,7 +551,7 @@ def compute_release_report(
             name="Performance",
             category="timing",
             severity=_severity_from_value(1.0 - timing_anomaly_density, 0.85, 0.6),
-            score_contribution=0.15 * max(0, 1.0 - timing_anomaly_density) * 100,
+            score_contribution=gw["perf"] * max(0, 1.0 - timing_anomaly_density) * 100,
             detail=f"{timing_anomaly_count} timing anomalies across {total_steps_checked} steps ({timing_anomaly_density:.0%})",
             affected_tests=[a["test_case_id"] for a in report.timing_anomalies[:5]],
         ))
@@ -515,7 +560,7 @@ def compute_release_report(
             name="Selector Confidence",
             category="selector",
             severity=_severity_from_value(avg_selector_confidence, 0.85, 0.6),
-            score_contribution=0.15 * avg_selector_confidence * 100,
+            score_contribution=gw["selector"] * avg_selector_confidence * 100,
             detail=f"Average selector success rate: {avg_selector_confidence:.0%}",
         ))
 
@@ -523,7 +568,7 @@ def compute_release_report(
             name="Behavior Confidence",
             category="behavior",
             severity=_severity_from_value(behavior_confidence, 0.9, 0.7),
-            score_contribution=0.20 * behavior_confidence * 100,
+            score_contribution=gw["behavior"] * behavior_confidence * 100,
             detail=f"Behavior verification success: {behavior_confidence:.0%} ({total_behavior_steps} steps checked)",
         ))
 
@@ -562,7 +607,20 @@ def compute_release_report(
     if use_v2 and report.historical_confidence is not None:
         report.risk_delta = report.confidence_score - report.historical_confidence
 
-    recommendation, reasons = _score_to_recommendation(report.confidence_score, blockers)
+    # Load per-org learned thresholds (2.2); fall back to defaults if not available
+    deploy_threshold = 85
+    caution_threshold = 60
+    try:
+        from app.intelligence.weight_learner import get_org_thresholds
+        caution_threshold, deploy_threshold = get_org_thresholds(db, org_id)
+    except Exception as e:
+        logger.warning("release_scorer.thresholds_load_failed", error=str(e)[:200])
+
+    recommendation, reasons = _score_to_recommendation(
+        report.confidence_score, blockers,
+        deploy_threshold=deploy_threshold,
+        caution_threshold=caution_threshold,
+    )
     report.recommendation = recommendation
     report.recommendation_reasons = reasons
 

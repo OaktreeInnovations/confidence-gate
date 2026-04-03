@@ -1,16 +1,18 @@
 from datetime import datetime, timezone
 from typing import Annotated
+import io
+import uuid
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 from pymongo import ReturnDocument
 import structlog
 
 from app.api.auth.dependencies import get_current_user
-from app.dependencies import get_db
+from app.dependencies import get_db, get_s3, get_settings
 from app.models import Project, User
 
 logger = structlog.get_logger(__name__)
@@ -24,6 +26,12 @@ class CreateProjectRequest(BaseModel):
     description: str = ""
     base_url: str = ""
     global_setup: str = ""
+    webhook_url: str = ""
+    # 3.1 Change-aware git integration
+    git_repo_url: str = ""
+    git_token: str = ""
+    # 3.5 Approval workflow
+    release_approvers: list[str] = Field(default_factory=list)
 
 
 class UpdateProjectRequest(BaseModel):
@@ -31,6 +39,13 @@ class UpdateProjectRequest(BaseModel):
     description: str | None = None
     base_url: str | None = None
     global_setup: str | None = None
+    webhook_url: str | None = None
+    git_repo_url: str | None = None
+    git_token: str | None = None
+    release_approvers: list[str] | None = None
+    # 8.3 Configurable gate thresholds
+    inconclusive_gate_pct: float | None = None
+    behavior_override_pct: float | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -40,6 +55,12 @@ class ProjectResponse(BaseModel):
     description: str
     base_url: str
     global_setup: str
+    webhook_url: str = ""
+    git_repo_url: str = ""
+    release_approvers: list[str] = Field(default_factory=list)
+    # 8.3 Configurable gate thresholds
+    inconclusive_gate_pct: float | None = None
+    behavior_override_pct: float | None = None
     created_by: str
     created_at: str
     updated_at: str
@@ -56,6 +77,11 @@ class ProjectResponse(BaseModel):
             description=project.description,
             base_url=project.base_url,
             global_setup=project.global_setup,
+            webhook_url=project.webhook_url,
+            git_repo_url=project.git_repo_url,
+            release_approvers=[str(a) for a in project.release_approvers],
+            inconclusive_gate_pct=project.inconclusive_gate_pct,
+            behavior_override_pct=project.behavior_override_pct,
             created_by=str(project.created_by),
             created_at=project.created_at.isoformat(),
             updated_at=project.updated_at.isoformat(),
@@ -106,12 +132,24 @@ async def create_project(
     org_id = require_org(current_user)
     now = datetime.now(timezone.utc)
 
+    from bson import ObjectId as _ObjId
+    approver_oids = []
+    for a in body.release_approvers:
+        try:
+            approver_oids.append(_ObjId(a))
+        except Exception:
+            pass
+
     project = Project(
         org_id=org_id,
         name=body.name,
         description=body.description,
         base_url=body.base_url,
         global_setup=body.global_setup,
+        webhook_url=body.webhook_url,
+        git_repo_url=body.git_repo_url,
+        git_token=body.git_token,
+        release_approvers=approver_oids,
         created_by=current_user.id,
         created_at=now,
         updated_at=now,
@@ -250,6 +288,20 @@ async def update_project(
         update_data["base_url"] = body.base_url
     if body.global_setup is not None:
         update_data["global_setup"] = body.global_setup
+    if body.webhook_url is not None:
+        update_data["webhook_url"] = body.webhook_url
+    if body.git_repo_url is not None:
+        update_data["git_repo_url"] = body.git_repo_url
+    if body.git_token is not None:
+        update_data["git_token"] = body.git_token
+    if body.release_approvers is not None:
+        from bson import ObjectId as _ObjId
+        update_data["release_approvers"] = [_ObjId(a) for a in body.release_approvers if a]
+    # 8.3 Configurable gate thresholds
+    if body.inconclusive_gate_pct is not None:
+        update_data["inconclusive_gate_pct"] = body.inconclusive_gate_pct
+    if body.behavior_override_pct is not None:
+        update_data["behavior_override_pct"] = body.behavior_override_pct
 
     if not update_data:
         raise HTTPException(
@@ -348,6 +400,146 @@ async def get_project_release_confidence(
     }
 
 
+@router.get("/{project_id}/predicted-score")
+async def get_predicted_score(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> dict:
+    """3.3 Predict the next release validation score without running tests."""
+    org_id = require_org(current_user)
+    oid = parse_object_id(project_id)
+
+    project_doc = await db.projects.find_one({"_id": oid, "org_id": org_id}, {"_id": 1})
+    if not project_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    import asyncio
+    from app.intelligence.prediction_engine import compute_predicted_score
+    loop = asyncio.get_event_loop()
+    from app.clients import sync_mongo as _sync_mongo
+    result = await loop.run_in_executor(
+        None,
+        compute_predicted_score,
+        _sync_mongo.db,
+        str(org_id),
+        project_id,
+    )
+    return result
+
+
+@router.get("/{project_id}/prediction-accuracy")
+async def get_prediction_accuracy(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+    n: int = 20,
+) -> dict:
+    """4.4 Return prediction accuracy stats for the last N completed validations."""
+    org_id = require_org(current_user)
+    oid = parse_object_id(project_id)
+
+    project_doc = await db.projects.find_one({"_id": oid, "org_id": org_id}, {"_id": 1})
+    if not project_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    # Fetch last N completed validations that have both scores
+    docs = await db.release_validations.find(
+        {
+            "project_id": oid,
+            "org_id": org_id,
+            "status": "completed",
+            "predicted_score_pre_run": {"$ne": None},
+            "prediction_accuracy": {"$ne": None},
+        },
+        {"_id": 1, "predicted_score_pre_run": 1, "prediction_accuracy": 1,
+         "confidence_score": 1, "created_at": 1},
+    ).sort("created_at", -1).limit(n).to_list(n)
+
+    if not docs:
+        return {"sample_size": 0, "mean_absolute_error": None, "reliable": None, "deltas": []}
+
+    deltas = [
+        {
+            "id": str(d["_id"]),
+            "predicted": d["predicted_score_pre_run"],
+            "actual": d.get("confidence_score"),
+            "delta": d["prediction_accuracy"],
+            "created_at": d["created_at"].isoformat() if d.get("created_at") else None,
+        }
+        for d in docs
+    ]
+    abs_errors = [abs(d["delta"]) for d in deltas if d["delta"] is not None]
+    mae = round(sum(abs_errors) / len(abs_errors), 1) if abs_errors else None
+    reliable = (mae is not None and mae <= 15)
+
+    return {
+        "sample_size": len(deltas),
+        "mean_absolute_error": mae,
+        "reliable": reliable,
+        "deltas": deltas,
+    }
+
+
+@router.get("/{project_id}/benchmark")
+async def get_project_benchmark(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> dict:
+    """3.4 Return within-org benchmark comparison for test cases in this project."""
+    org_id = require_org(current_user)
+    oid = parse_object_id(project_id)
+
+    project_doc = await db.projects.find_one({"_id": oid, "org_id": org_id}, {"_id": 1})
+    if not project_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    import asyncio
+    from app.intelligence.benchmark_engine import get_benchmark_for_project
+    from app.clients import sync_mongo as _sync_mongo
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        get_benchmark_for_project,
+        _sync_mongo.db,
+        str(org_id),
+        project_id,
+    )
+    # Strip internal _id if present
+    result.pop("_id", None)
+    return result
+
+
+@router.get("/{project_id}/confidence-benchmark")
+async def get_confidence_benchmark(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> dict:
+    """7C.3 Return this org's cross-org confidence score percentile ranking."""
+    org_id = require_org(current_user)
+    oid = parse_object_id(project_id)
+
+    project_doc = await db.projects.find_one({"_id": oid, "org_id": org_id}, {"_id": 1})
+    if not project_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    stats = await db.benchmark_stats.find_one(
+        {"org_id": str(org_id)},
+        {"confidence_percentile": 1, "percentile_computed_at": 1},
+    )
+
+    if not stats or stats.get("confidence_percentile") is None:
+        return {"confidence_percentile": None, "available": False}
+
+    return {
+        "confidence_percentile": stats["confidence_percentile"],
+        "available": True,
+        "computed_at": stats["percentile_computed_at"].isoformat() if stats.get("percentile_computed_at") else None,
+    }
+
+
 @router.get("/{project_id}/failure-graph")
 async def get_project_failure_graph(
     project_id: str,
@@ -397,7 +589,12 @@ async def ci_gate(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
 ) -> CIGateResponse:
-    """CI gate: check if project meets minimum confidence threshold."""
+    """CI gate: check if project meets minimum confidence threshold.
+
+    Uses the most recent completed release validation score (same 11-layer pipeline
+    as the UI) so CI and the dashboard always agree. Falls back to a simple profile
+    aggregation when no completed validations exist yet.
+    """
     org_id = require_org(current_user)
     oid = parse_object_id(project_id)
 
@@ -405,7 +602,36 @@ async def ci_gate(
     if not project_doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    # Get test case IDs
+    # Primary: use the most recently completed release validation (full pipeline score)
+    last_validation = await db.release_validations.find_one(
+        {
+            "project_id": oid,
+            "org_id": org_id,
+            "status": "completed",
+            "final_score_at_decision": {"$ne": None},
+        },
+        {"final_score_at_decision": 1, "confidence_grade": 1, "completed_at": 1},
+        sort=[("completed_at", -1)],
+    )
+
+    if last_validation:
+        score = float(last_validation["final_score_at_decision"])
+        grade = last_validation.get("confidence_grade") or (
+            "A" if score >= 90 else
+            "B" if score >= 75 else
+            "C" if score >= 60 else
+            "D" if score >= 40 else "F"
+        )
+        completed_at = last_validation.get("completed_at")
+        computed_at = completed_at.isoformat() if hasattr(completed_at, "isoformat") else str(completed_at) if completed_at else None
+        return CIGateResponse(
+            passed=score >= body.min_confidence,
+            confidence_score=round(score, 1),
+            release_grade=grade,
+            computed_at=computed_at,
+        )
+
+    # Fallback: no completed validations yet — aggregate from execution profiles
     tc_cursor = db.test_cases.find(
         {"project_id": oid, "org_id": org_id, "status": {"$ne": "archived"}},
         {"_id": 1},
@@ -435,7 +661,6 @@ async def ci_gate(
         "D" if score >= 40 else "F"
     )
 
-    # Find latest computed_at
     computed_at = None
     for p in profiles:
         ts = p.get("updated_at")
@@ -448,6 +673,165 @@ async def ci_gate(
         release_grade=grade,
         computed_at=computed_at,
     )
+
+
+# ── Project Documents ────────────────────────────────────────────────────────
+
+_TEXT_EXTENSIONS = {"txt", "md", "markdown", "rst", "csv", "json", "yaml", "yml"}
+_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
+_PDF_EXTENSIONS = {"pdf"}
+_MAX_DOC_SIZE = 20 * 1024 * 1024  # 20 MB
+
+
+def _doc_type(filename: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext in _PDF_EXTENSIONS:
+        return "pdf"
+    if ext in _IMAGE_EXTENSIONS:
+        return "image"
+    if ext in _TEXT_EXTENSIONS:
+        return "text"
+    return "other"
+
+
+def _extract_text(filename: str, content: bytes) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext in _TEXT_EXTENSIONS:
+        return content.decode("utf-8", errors="ignore")[:50_000]
+    if ext in _PDF_EXTENSIONS:
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(content))
+            pages_text = []
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    pages_text.append(t)
+            return "\n".join(pages_text)[:50_000]
+        except Exception:
+            return ""
+    return ""
+
+
+@router.post("/{project_id}/documents")
+async def upload_project_document(
+    project_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: Annotated[User, Depends(get_current_user)] = ...,  # type: ignore[assignment]
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)] = ...,  # type: ignore[assignment]
+) -> dict:
+    org_id = require_org(current_user)
+    oid = parse_object_id(project_id)
+
+    project_doc = await db.projects.find_one({"_id": oid, "org_id": org_id}, {"_id": 1})
+    if not project_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    content = await file.read()
+    if len(content) > _MAX_DOC_SIZE:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large (max 20 MB)")
+
+    doc_id = str(uuid.uuid4())
+    filename = file.filename or "document"
+    dtype = _doc_type(filename)
+    extracted_text = _extract_text(filename, content)
+
+    s3_key = f"project-docs/{org_id}/{project_id}/{doc_id}/{filename}"
+
+    settings = get_settings(request)
+    s3_client = get_s3(request)
+    async with s3_client.get_client() as client:
+        await client.put_object(
+            Bucket=settings.minio_default_bucket,
+            Key=s3_key,
+            Body=content,
+            ContentType=file.content_type or "application/octet-stream",
+        )
+
+    now = datetime.now(timezone.utc)
+    doc_record = {
+        "_id": doc_id,
+        "project_id": oid,
+        "org_id": org_id,
+        "name": filename,
+        "type": dtype,
+        "size": len(content),
+        "s3_key": s3_key,
+        "extracted_text": extracted_text,
+        "uploaded_by": current_user.id,
+        "uploaded_at": now,
+    }
+    await db.project_documents.insert_one(doc_record)
+
+    logger.info("project.document_uploaded", project_id=project_id, doc_id=doc_id, dtype=dtype, size=len(content))
+    return {
+        "id": doc_id,
+        "name": filename,
+        "type": dtype,
+        "size": len(content),
+        "uploaded_at": now.isoformat(),
+    }
+
+
+@router.get("/{project_id}/documents")
+async def list_project_documents(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> dict:
+    org_id = require_org(current_user)
+    oid = parse_object_id(project_id)
+
+    project_doc = await db.projects.find_one({"_id": oid, "org_id": org_id}, {"_id": 1})
+    if not project_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    docs = await db.project_documents.find(
+        {"project_id": oid, "org_id": org_id},
+        {"extracted_text": 0},
+    ).sort("uploaded_at", -1).to_list(100)
+
+    return {
+        "documents": [
+            {
+                "id": str(d["_id"]),
+                "name": d["name"],
+                "type": d["type"],
+                "size": d["size"],
+                "uploaded_at": d["uploaded_at"].isoformat() if d.get("uploaded_at") else None,
+            }
+            for d in docs
+        ]
+    }
+
+
+@router.delete("/{project_id}/documents/{doc_id}")
+async def delete_project_document(
+    project_id: str,
+    doc_id: str,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> dict:
+    org_id = require_org(current_user)
+    oid = parse_object_id(project_id)
+
+    doc = await db.project_documents.find_one({"_id": doc_id, "project_id": oid, "org_id": org_id})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    try:
+        settings = get_settings(request)
+        s3_client = get_s3(request)
+        async with s3_client.get_client() as client:
+            await client.delete_object(Bucket=settings.minio_default_bucket, Key=doc["s3_key"])
+    except Exception:
+        pass
+
+    await db.project_documents.delete_one({"_id": doc_id})
+    logger.info("project.document_deleted", project_id=project_id, doc_id=doc_id)
+    return {"deleted": True}
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -480,3 +864,108 @@ async def delete_project(
 
     await db.projects.delete_one({"_id": oid, "org_id": org_id})
     logger.info("project.deleted", project_id=project_id, org_id=str(org_id))
+
+
+# ── 9B.2 Test prioritization ──────────────────────────────────────────────────
+
+@router.get("/{project_id}/prioritized-tests")
+async def get_prioritized_tests(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+    n: int = Query(default=20, ge=1, le=200),
+) -> dict:
+    """Return test cases ranked by risk score (highest risk first).
+
+    risk = recency_weight * (1 - pass_rate) * (1 + is_critical)
+    """
+    org_id = require_org(current_user)
+    oid = parse_object_id(project_id)
+
+    project_doc = await db.projects.find_one({"_id": oid, "org_id": org_id}, {"_id": 1})
+    if not project_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    import asyncio
+    from app.intelligence.test_prioritizer import get_prioritized_tests as _prioritize
+    from app.clients import sync_mongo as _sync_mongo
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(
+        None,
+        _prioritize,
+        _sync_mongo.db,
+        str(org_id),
+        project_id,
+        n,
+    )
+
+    return {"project_id": project_id, "n": n, "tests": results}
+
+
+# ── 9B.1 Deployment event ingestion ──────────────────────────────────────────
+
+class DeploymentEventRequest(BaseModel):
+    event_type: str = Field(
+        ...,
+        pattern="^(deployment_completed|incident_opened|incident_resolved)$",
+    )
+    deployment_id: str = ""
+    service: str = ""
+    deployed_at: str | None = None   # ISO-8601; defaults to now
+
+
+@router.post("/{project_id}/deployment-event", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_deployment_event(
+    project_id: str,
+    body: DeploymentEventRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> dict:
+    """Record a deployment or incident event and schedule outcome inference.
+
+    Outcome inference rules (run asynchronously):
+    - deployment_completed + no incident within 48 h  → production_passed
+    - incident_opened within 48 h of latest deployment → production_failed
+    """
+    org_id = require_org(current_user)
+    oid = parse_object_id(project_id)
+
+    project_doc = await db.projects.find_one({"_id": oid, "org_id": org_id}, {"_id": 1})
+    if not project_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    event_ts = now
+    if body.deployed_at:
+        try:
+            event_ts = datetime.fromisoformat(body.deployed_at.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+
+    event_doc = {
+        "org_id": org_id,
+        "project_id": oid,
+        "event_type": body.event_type,
+        "deployment_id": body.deployment_id,
+        "service": body.service,
+        "event_at": event_ts,
+        "recorded_at": now,
+        "processed": False,
+    }
+    result = await db.deployment_events.insert_one(event_doc)
+
+    # Queue background inference
+    try:
+        from app.worker.tasks.infer_outcomes import infer_outcomes_for_project
+        infer_outcomes_for_project.delay(project_id=project_id, org_id=str(org_id))
+    except Exception as e:
+        logger.warning("deployment_event.dispatch_failed", error=str(e)[:200])
+
+    logger.info(
+        "deployment_event.ingested",
+        project_id=project_id,
+        event_type=body.event_type,
+        event_id=str(result.inserted_id),
+    )
+    return {"accepted": True, "event_id": str(result.inserted_id)}

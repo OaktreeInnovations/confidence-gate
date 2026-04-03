@@ -9,6 +9,10 @@ export const validationStatusBadgeVariant: Record<
   computing: "default",
   completed: "success",
   failed: "destructive",
+  cancelled: "muted",
+  awaiting_approval: "warning",
+  approved: "success",
+  rejected: "destructive",
 };
 
 export function recommendationVariant(
@@ -21,6 +25,10 @@ export function recommendationVariant(
       return "warning";
     case "block":
       return "destructive";
+    case "insufficient_data":
+      return "warning";
+    case "override_shipped":
+      return "warning";
     default:
       return "muted";
   }
@@ -34,6 +42,10 @@ export function recommendationLabel(rec: string | null | undefined): string {
       return "Proceed with Caution";
     case "block":
       return "Block Release";
+    case "insufficient_data":
+      return "Insufficient Data";
+    case "override_shipped":
+      return "Shipped with Override";
     default:
       return "Pending";
   }

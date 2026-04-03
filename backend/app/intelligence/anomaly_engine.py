@@ -59,7 +59,8 @@ def detect_anomalies(
             current_avg = sum(current_attempts) / len(current_attempts)
 
             baseline_avgs = [sp.get("avg_attempts", 1.0) for sp in step_profiles]
-            if not baseline_avgs:
+            # 9A.6 Require ≥5 baseline samples; fewer yields unreliable z-scores
+            if len(baseline_avgs) < 5:
                 continue
 
             baseline_mean = sum(baseline_avgs) / len(baseline_avgs)
@@ -103,7 +104,8 @@ def detect_anomalies(
                 continue
 
             median_dur = profile.get("median_duration_ms", 0)
-            if median_dur == 0:
+            # 9A.6 Also require ≥5 historical runs before timing z-scores
+            if median_dur == 0 or profile.get("total_runs", 0) < 5:
                 continue
 
             timing_baselines = profile.get("timing_baselines", {})

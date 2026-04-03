@@ -5,6 +5,8 @@ from app.dependencies import get_settings
 
 router = APIRouter()
 
+_BEAT_HEARTBEAT_KEY = "cg:beat_heartbeat"
+
 
 @router.get("/health")
 async def health() -> dict:
@@ -36,6 +38,15 @@ async def readiness(request: Request) -> JSONResponse:
         "execution_strategy": settings.execution_strategy_enabled,
         "failure_graph": settings.failure_graph_enabled,
     }
+
+    # Beat scheduler heartbeat — written every 5 min with 10-min TTL by the heartbeat task
+    try:
+        beat_alive = await request.app.state.redis.client.exists(_BEAT_HEARTBEAT_KEY)
+        checks["beat"] = "ok" if beat_alive else "degraded"
+    except Exception:
+        checks["beat"] = "unknown"
+
+    all_ok = all(v == "ok" for v in checks.values())
 
     return JSONResponse(
         content={

@@ -112,6 +112,57 @@ class MongoClient:
         await db.release_validations.create_index([("org_id", 1), ("project_id", 1)])
         await db.release_validations.create_index([("org_id", 1), ("status", 1), ("created_at", -1)])
 
+        # 1.6 selector_blacklist indexes — TTL auto-expire after 7 days
+        await db.selector_blacklist.create_index(
+            [("test_case_id", 1), ("step_number", 1), ("target_key", 1), ("org_id", 1)],
+            unique=True,
+            name="blacklist_unique",
+        )
+        await db.selector_blacklist.create_index(
+            "expires_at", expireAfterSeconds=0, name="blacklist_ttl"
+        )
+
+        # 3.2 visual_baselines indexes
+        await db.visual_baselines.create_index(
+            [("test_case_id", 1), ("step_number", 1), ("org_id", 1)],
+            unique=True,
+            name="visual_baseline_unique",
+        )
+
+        # 3.4 benchmark_stats indexes
+        await db.benchmark_stats.create_index([("org_id", 1), ("computed_at", -1)])
+
+        # 3.1 test_run_steps — full step results externalized from test_runs documents
+        await db.test_run_steps.create_index(
+            [("test_run_id", 1), ("org_id", 1)],
+            name="test_run_steps_lookup",
+        )
+        await db.test_run_steps.create_index(
+            "test_run_id", unique=True,
+            name="test_run_steps_unique",
+        )
+
+        # org_learned_thresholds — per-org calibrated decision thresholds (2.2)
+        await db.org_learned_thresholds.create_index("org_id", unique=True)
+
+        # 5.3 test_run_steps TTL — auto-expire after 90 days (matches evidence retention)
+        await db.test_run_steps.create_index(
+            "created_at", expireAfterSeconds=90 * 24 * 3600, name="test_run_steps_ttl_90d"
+        )
+
+        # 5.2 project_alerts — regression signals per project
+        await db.project_alerts.create_index(
+            [("project_id", 1), ("alert_type", 1)], unique=True, name="project_alerts_unique"
+        )
+        await db.project_alerts.create_index([("org_id", 1), ("updated_at", -1)])
+
+        # 9A.8 score_mutations — immutable audit log of confidence_score changes
+        await db.score_mutations.create_index([("validation_id", 1), ("timestamp", 1)])
+
+        # 9B.1 deployment_events — ingested deployment/incident signals for outcome inference
+        await db.deployment_events.create_index([("project_id", 1), ("org_id", 1), ("processed", 1)])
+        await db.deployment_events.create_index([("project_id", 1), ("event_at", -1)])
+
         logger.info("mongo.indexes_ensured")
 
     async def ping(self) -> bool:

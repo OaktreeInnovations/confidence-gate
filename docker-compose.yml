@@ -121,7 +121,7 @@ services:
       - .env
     shm_size: '2gb'
     deploy:
-      replicas: 2
+      replicas: 4
       resources:
         limits:
           memory: 4g

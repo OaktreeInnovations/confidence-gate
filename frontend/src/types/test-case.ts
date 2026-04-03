@@ -35,10 +35,14 @@ export interface TestCase {
   status: TestCaseStatus;
   tags: string[];
   test_data: Record<string, string>;
+  is_critical: boolean;
+  is_informational: boolean;
+  version: number;
   created_by: string;
   created_at: string;
   updated_at: string;
   flake_badge?: string | null;
+  quality_grade?: string | null;  // A/B/C/D — test quality score (3.2)
 }
 
 export interface TestCaseListResponse {

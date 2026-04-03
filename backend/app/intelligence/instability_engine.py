@@ -65,19 +65,28 @@ def compute_instability(
                 if step_attempts >= 3:
                     resolution_retry_steps += 1
 
-        retry_rate = total_retries / max(total_attempts, 1)
-        healing_rate = healing_steps / max(total_steps, 1)
-        behavior_failure_rate = total_behavior_failures / max(total_attempts, 1)
-        resolution_retry_rate = resolution_retry_steps / max(total_steps, 1)
+        # 9A.5 All four rates use total_steps as denominator so they are comparable.
+        # Per-step normalization: clamp each to [0, 1] since retries/failures can exceed
+        # 1.0 per step (multiple retries on a single step).
+        _steps = max(total_steps, 1)
+        retry_rate = min(1.0, total_retries / _steps)
+        healing_rate = healing_steps / _steps
+        behavior_failure_rate = min(1.0, total_behavior_failures / _steps)
+        resolution_retry_rate = resolution_retry_steps / _steps
 
         instability_index = int(
             ((retry_rate + healing_rate + behavior_failure_rate + resolution_retry_rate) / 4.0) * 100
         )
-        instability_penalty = round(instability_index * 0.15, 4)
+
+        # Scale penalty by evidence volume: fewer runs = less confident in instability reading.
+        # At 1 run the penalty is 10% of full weight; at 10+ runs it is the full penalty.
+        evidence_weight = min(1.0, len(runs) / 10)
+        instability_penalty = round(instability_index * 0.15 * evidence_weight, 4)
 
         return {
             "instability_index": instability_index,
             "instability_penalty": instability_penalty,
+            "evidence_weight": round(evidence_weight, 3),
             "components": {
                 "retry_rate": round(retry_rate, 4),
                 "healing_rate": round(healing_rate, 4),

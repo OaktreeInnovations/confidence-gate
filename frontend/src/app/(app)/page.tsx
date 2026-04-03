@@ -60,11 +60,27 @@ interface StuckRun {
   minutes_running: number;
 }
 
+interface RegressionAlert {
+  id: string;
+  project_id: string;
+  project_name: string;
+  alert_type: string;
+  severity: "warning" | "critical";
+  title: string;
+  detail: string;
+  updated_at: string | null;
+}
+
 interface DashboardData {
   recent_runs: RecentRun[];
   flaky_tests: FlakyTest[];
   project_health: ProjectHealth[];
   stuck_runs: StuckRun[];
+  regression_alerts: RegressionAlert[];
+  // 8.6 Learning loop health
+  outcome_recording_rate: number | null;
+  outcome_recording_total: number;
+  outcome_recording_with_outcome: number;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -154,6 +170,7 @@ export default function DashboardPage() {
   const recentRuns = data?.recent_runs ?? [];
   const flakyTests = data?.flaky_tests ?? [];
   const projectHealth = data?.project_health ?? [];
+  const regressionAlerts = data?.regression_alerts ?? [];
 
   return (
     <div className="space-y-6 p-6">
@@ -350,6 +367,77 @@ export default function DashboardPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* 8.6 Learning loop health */}
+      {data?.outcome_recording_total != null && data.outcome_recording_total > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+              <Activity className="h-4 w-4 text-muted-foreground" />
+              Learning Loop Health
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-4">
+              <div>
+                <p className="text-2xl font-bold">
+                  {data.outcome_recording_rate != null
+                    ? `${Math.round(data.outcome_recording_rate * 100)}%`
+                    : "—"}
+                </p>
+                <p className="text-xs text-muted-foreground">Outcome recording rate</p>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                <p>{data.outcome_recording_with_outcome} of {data.outcome_recording_total} completed validations have a recorded production outcome.</p>
+                {data.outcome_recording_rate != null && data.outcome_recording_rate < 0.5 && (
+                  <p className="mt-1 text-amber-600 font-medium">
+                    Low coverage — the calibration model learns better with more outcome feedback.
+                  </p>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 6.2 Regression alerts */}
+      {regressionAlerts.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+              <AlertTriangle className="h-4 w-4 text-destructive" />
+              Regression Alerts
+              <span className="ml-auto text-xs font-normal text-muted-foreground">
+                {regressionAlerts.length} active
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y">
+              {regressionAlerts.map((a) => (
+                <div key={a.id} className="flex items-start gap-3 px-4 py-3">
+                  <div className={`mt-0.5 h-2 w-2 rounded-full shrink-0 ${
+                    a.severity === "critical" ? "bg-destructive" : "bg-amber-500"
+                  }`} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-foreground">{a.title}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">{a.detail}</p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <Link
+                      href={`/projects/${a.project_id}`}
+                      className="text-[10px] font-medium text-primary hover:underline"
+                    >
+                      {a.project_name || "Project"}
+                    </Link>
+                    <p className="text-[10px] text-muted-foreground">{timeAgo(a.updated_at)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

@@ -123,9 +123,11 @@ export default function ReleasesPage() {
                       {v.title || ""}
                     </TableCell>
                     <TableCell className="text-center">
-                      {v.confidence_score != null ? (
-                        <span className={`font-bold tabular-nums ${scoreColor(v.confidence_score)}`}>
-                          {v.confidence_score}
+                      {v.recommendation === "insufficient_data" ? (
+                        <span className="text-warning text-xs font-semibold">N/A</span>
+                      ) : (v.final_score_at_decision ?? v.confidence_score) != null ? (
+                        <span className={`font-bold tabular-nums ${scoreColor(v.final_score_at_decision ?? v.confidence_score)}`}>
+                          {v.final_score_at_decision ?? v.confidence_score}
                         </span>
                       ) : (
                         <span className="text-muted-foreground">--</span>
