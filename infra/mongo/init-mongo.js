@@ -1,4 +1,4 @@
-db = db.getSiblingDB("qualora");
+db = db.getSiblingDB("confidence-gate");
 
 db.createCollection("_init");
 
@@ -30,4 +30,4 @@ db.test_runs.createIndex({ "org_id": 1, "status": 1 });
 db.createCollection("score_mutations");
 db.score_mutations.createIndex({ "validation_id": 1, "timestamp": 1 });
 
-print("MongoDB initialization complete: 'qualora' database created with indexes.");
+print("MongoDB initialization complete: 'confidence-gate' database created with indexes.");

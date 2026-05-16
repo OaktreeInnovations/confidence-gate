@@ -2,7 +2,7 @@ services:
   # ---------- Infrastructure ----------
   mongo:
     image: mongo:7
-    container_name: qualora-mongo
+    container_name: cg-mongo
     restart: unless-stopped
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
@@ -19,11 +19,11 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - qualora-net
+      - cg-net
 
   redis:
     image: redis:7-alpine
-    container_name: qualora-redis
+    container_name: cg-redis
     restart: unless-stopped
     ports:
       - "6381:6379"
@@ -35,11 +35,11 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - qualora-net
+      - cg-net
 
   minio:
     image: minio/minio:latest
-    container_name: qualora-minio
+    container_name: cg-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -57,11 +57,11 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - qualora-net
+      - cg-net
 
   minio-init:
     image: minio/mc:latest
-    container_name: qualora-minio-init
+    container_name: cg-minio-init
     depends_on:
       minio:
         condition: service_healthy
@@ -74,7 +74,7 @@ services:
     volumes:
       - ./infra/minio/init-buckets.sh:/init-buckets.sh:ro
     networks:
-      - qualora-net
+      - cg-net
     restart: "no"
 
   # ---------- Application ----------
@@ -83,7 +83,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       target: runtime
-    container_name: qualora-backend-api
+    container_name: cg-backend-api
     restart: unless-stopped
     ports:
       - "8001:8000"
@@ -110,7 +110,7 @@ services:
       retries: 3
       start_period: 15s
     networks:
-      - qualora-net
+      - cg-net
 
   worker:
     build:
@@ -140,13 +140,13 @@ services:
       retries: 3
       start_period: 30s
     networks:
-      - qualora-net
+      - cg-net
 
   beat:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
-    container_name: qualora-beat
+    container_name: cg-beat
     restart: unless-stopped
     env_file:
       - .env
@@ -166,7 +166,7 @@ services:
       retries: 3
       start_period: 10s
     networks:
-      - qualora-net
+      - cg-net
 
   frontend:
     build:
@@ -174,16 +174,16 @@ services:
       dockerfile: Dockerfile
       target: runner
       args:
-        NEXT_PUBLIC_FIREBASE_API_KEY: AIzaSyCBxGKx2t5mTcxcLnmdTQw5dtaL8tnJEeA
-        NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: qualora-bd693.firebaseapp.com
-        NEXT_PUBLIC_FIREBASE_PROJECT_ID: qualora-bd693
-        BACKEND_URL: http://qualora-backend-api:8000
-    container_name: qualora-frontend
+        NEXT_PUBLIC_FIREBASE_API_KEY: ${NEXT_PUBLIC_FIREBASE_API_KEY}
+        NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}
+        NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${NEXT_PUBLIC_FIREBASE_PROJECT_ID}
+        BACKEND_URL: http://cg-backend-api:8000
+    container_name: cg-frontend
     restart: unless-stopped
     ports:
       - "3001:3000"
     environment:
-      - BACKEND_URL=http://qualora-backend-api:8000
+      - BACKEND_URL=http://cg-backend-api:8000
     depends_on:
       backend-api:
         condition: service_healthy
@@ -194,7 +194,7 @@ services:
       retries: 3
       start_period: 20s
     networks:
-      - qualora-net
+      - cg-net
 
 volumes:
   mongo_data:
@@ -202,5 +202,5 @@ volumes:
   minio_data:
 
 networks:
-  qualora-net:
+  cg-net:
     driver: bridge

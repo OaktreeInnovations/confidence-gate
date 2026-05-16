@@ -1,0 +1,60 @@
+name: Bug report
+description: Something isn't working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Thanks for taking the time to report a bug."
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you do?
+      placeholder: |
+        1. Go to ...
+        2. Click on ...
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include error messages or screenshots.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Confidence Gate version / commit
+      placeholder: e.g. main@a1b2c3d
+  - type: dropdown
+    id: auth_provider
+    attributes:
+      label: Auth provider
+      options:
+        - firebase
+        - local
+        - other
+  - type: dropdown
+    id: ai_provider
+    attributes:
+      label: AI provider
+      options:
+        - openai
+        - anthropic
+        - ollama
+        - none / not configured
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Docker version, relevant logs
+      render: shell

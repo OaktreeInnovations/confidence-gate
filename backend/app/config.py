@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # MongoDB
     mongo_host: str = "mongo"
     mongo_port: int = 27017
-    mongo_db: str = "qualora"
+    mongo_db: str = "confidence-gate"
     mongo_initdb_root_username: str
     mongo_initdb_root_password: str
     mongo_max_pool_size: int = 50
@@ -49,15 +49,22 @@ class Settings(BaseSettings):
     minio_endpoint: str = "minio:9000"
     minio_root_user: str
     minio_root_password: str
-    minio_default_bucket: str = "qualora-artifacts"
+    minio_default_bucket: str = "confidence-gate-artifacts"
     minio_use_ssl: bool = False
 
-    # Firebase
-    firebase_project_id: str = "qualora-bd693"
+    # Auth provider: "firebase" (default) or "local" (dev JWT)
+    auth_provider: str = "firebase"
+    firebase_project_id: str = ""
+    local_auth_secret: str = "change-me-in-production"
 
-    # OpenAI (AI)
+    # AI provider: "openai" (default), "anthropic", or "ollama"
+    ai_provider: str = "openai"
     openai_api_key: str = ""
-    openai_model: str = "gpt-5-mini"
+    openai_model: str = "gpt-4o-mini"
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-3-5-haiku-20241022"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.2"
 
     # Execution rate limiting
     execution_rate_limit_enabled: bool = True

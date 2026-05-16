@@ -4,10 +4,10 @@ Uses Redis atomic operations with TTL-based crash safety.
 All counters auto-expire so a dead worker never permanently blocks slots.
 
 Redis key schema:
-    qualora:exec:org:{org_id}       — concurrent running count per org (TTL = lock_ttl)
-    qualora:exec:global             — global concurrent running count (TTL = lock_ttl)
-    qualora:exec:queue:{org_id}     — queued (not yet running) count per org (TTL = lock_ttl)
-    qualora:exec:slot:{test_run_id} — per-run marker so decrement is idempotent (TTL = lock_ttl)
+    cg:exec:org:{org_id}       — concurrent running count per org (TTL = lock_ttl)
+    cg:exec:global             — global concurrent running count (TTL = lock_ttl)
+    cg:exec:queue:{org_id}     — queued (not yet running) count per org (TTL = lock_ttl)
+    cg:exec:slot:{test_run_id} — per-run marker so decrement is idempotent (TTL = lock_ttl)
 
 Each running test run holds a "slot" key. When the run completes
 (or crashes and the TTL expires), the slot key disappears and the
@@ -82,19 +82,19 @@ return 0
 
 
 def _key_org(org_id: str) -> str:
-    return f"qualora:exec:org:{org_id}"
+    return f"cg:exec:org:{org_id}"
 
 
 def _key_global() -> str:
-    return "qualora:exec:global"
+    return "cg:exec:global"
 
 
 def _key_queue(org_id: str) -> str:
-    return f"qualora:exec:queue:{org_id}"
+    return f"cg:exec:queue:{org_id}"
 
 
 def _key_slot(test_run_id: str) -> str:
-    return f"qualora:exec:slot:{test_run_id}"
+    return f"cg:exec:slot:{test_run_id}"
 
 
 class ExecutionLimiter:

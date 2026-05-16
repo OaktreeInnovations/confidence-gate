@@ -156,7 +156,7 @@ def compute_final_score(
     org_id: str,
     batch_id: str,
     project_id: str,
-    openai_api_key: str = "",
+    chat_provider=None,
     context: dict | None = None,
     min_runs_for_decision: int = 3,
 ) -> dict:
@@ -291,7 +291,7 @@ def compute_final_score(
 
     # ── 10. AI risk analyst (bounded ±5) ──────────────────────────────────────
     ai_result = {"ai_adjustment": 0, "ai_confidence": 0.0, "ai_insights": [], "risk_explanations": []}
-    if openai_api_key:
+    if chat_provider is not None:
         try:
             from app.intelligence.ai_risk_analyst import analyze_with_ai
             enriched = {
@@ -302,7 +302,7 @@ def compute_final_score(
                 "delta": delta,
                 "trend": trajectory["trend"],
             }
-            ai_result = analyze_with_ai(enriched, context, openai_api_key)
+            ai_result = analyze_with_ai(enriched, context, chat_provider)
         except Exception as e:
             logger.warning("final_score.ai_error", error=str(e)[:200])
     _t = _mark("ai_analyst", _t)

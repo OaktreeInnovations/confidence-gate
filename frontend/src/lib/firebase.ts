@@ -2,13 +2,9 @@ import { initializeApp, getApps, FirebaseApp } from "firebase/app";
 import { getAuth, Auth } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey:
-    process.env.NEXT_PUBLIC_FIREBASE_API_KEY ??
-    "AIzaSyCBxGKx2t5mTcxcLnmdTQw5dtaL8tnJEeA",
-  authDomain:
-    process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ??
-    "qualora-bd693.firebaseapp.com",
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "qualora-bd693",
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "",
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "",
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "",
 };
 
 let app: FirebaseApp;

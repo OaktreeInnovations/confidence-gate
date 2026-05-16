@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest an idea for Confidence Gate
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: "Thanks for the suggestion."
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What are you trying to do? What's the current limitation?
+      placeholder: "I'm trying to do X but..."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you consider?
+  - type: checkboxes
+    id: willing_to_implement
+    attributes:
+      label: Are you willing to submit a PR?
+      options:
+        - label: "Yes, I'd like to implement this myself"

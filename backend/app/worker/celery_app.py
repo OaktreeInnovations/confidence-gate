@@ -8,7 +8,7 @@ settings = Settings()
 logger = structlog.get_logger(__name__)
 
 celery_app = Celery(
-    "qualora",
+    "confidence-gate",
     broker=settings.redis_url,
     backend=settings.redis_url,
 )
@@ -20,7 +20,7 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    task_default_queue="qualora.default",
+    task_default_queue="cg.default",
     worker_prefetch_multiplier=1,
     worker_concurrency=2,
     task_acks_late=True,
@@ -52,43 +52,43 @@ celery_app.conf.update(
 
 celery_app.conf.beat_schedule = {
     "prune-expired-evidence": {
-        "task": "qualora.prune_expired_evidence",
+        "task": "cg.prune_expired_evidence",
         "schedule": 3600.0,  # every hour
     },
     "check-validation-sla": {
-        "task": "qualora.check_validation_sla",
+        "task": "cg.check_validation_sla",
         "schedule": 300.0,  # every 5 minutes
     },
     "compute-benchmarks": {
-        "task": "qualora.compute_benchmarks",
+        "task": "cg.compute_benchmarks",
         "schedule": 86400.0,  # nightly
     },
     # 8.4 Replaced three racing Beat entries with a single ordered chain.
     # sync_outcomes → compute_learned_thresholds → optimize_global_weights
     "nightly-learning-chain": {
-        "task": "qualora.nightly_learning_chain",
+        "task": "cg.nightly_learning_chain",
         "schedule": 86400.0,  # nightly
     },
     "send-outcome-reminder": {
-        "task": "qualora.send_outcome_reminder",
+        "task": "cg.send_outcome_reminder",
         "schedule": 86400.0,  # nightly
     },
     "beat-heartbeat": {
-        "task": "qualora.beat_heartbeat",
+        "task": "cg.beat_heartbeat",
         "schedule": 300.0,  # every 5 minutes
     },
     "detect-model-drift": {
-        "task": "qualora.detect_model_drift",
+        "task": "cg.detect_model_drift",
         "schedule": 86400.0,  # nightly
     },
     # 9B.1 Automated outcome inference — sweep all projects every 4 hours
     "infer-outcomes-all": {
-        "task": "qualora.infer_outcomes_all",
+        "task": "cg.infer_outcomes_all",
         "schedule": 14400.0,  # every 4 hours
     },
     # 9B.3 Proactive flaky test degradation detection
     "detect-flaky-degradation": {
-        "task": "qualora.detect_flaky_degradation",
+        "task": "cg.detect_flaky_degradation",
         "schedule": 86400.0,  # nightly
     },
 }

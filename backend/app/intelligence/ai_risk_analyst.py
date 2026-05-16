@@ -8,8 +8,12 @@ Adjustment range:
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 import structlog
+
+if TYPE_CHECKING:
+    from app.ai.base import ChatProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -56,16 +60,10 @@ _SYSTEM_PROMPT_REQUIREMENTS = (
 
 
 def _build_prompt(report_dict: dict, context: dict) -> str:
-    """Build the AI prompt.
-
-    report_dict: enriched report with all computed signals (instability, coverage, etc.)
-    context: release validation context with prd_text and notes
-    """
     batch = report_dict.get("batch_summary", {})
     blockers = report_dict.get("blockers", [])
     root_causes = [rc.get("description", "") for rc in report_dict.get("root_causes", [])]
 
-    # These live in report_dict (enriched), NOT in context
     anomalies = report_dict.get("anomalies", [])
     instability_index = report_dict.get("instability_index", 0)
     coverage_score = report_dict.get("coverage_score", 0)
@@ -73,7 +71,6 @@ def _build_prompt(report_dict: dict, context: dict) -> str:
     score_delta = delta.get("score_delta") if isinstance(delta, dict) else None
     trend = report_dict.get("trend", "stable")
 
-    # PRD and notes come from context
     prd_text = (context.get("prd_text") or "").strip()
     notes = (context.get("notes") or "").strip()
 
@@ -114,28 +111,25 @@ def _build_prompt(report_dict: dict, context: dict) -> str:
 def _extract_requirement_coverage(
     prd_text: str,
     test_summary: str,
-    client: "OpenAI",  # type: ignore[name-defined]
+    provider: "ChatProvider",
 ) -> list[dict]:
-    """Return structured requirement coverage for the PRD. Non-fatal — returns [] on any error."""
+    from app.ai.base import Message
     try:
         user_prompt = (
             f"--- TEST EXECUTION SUMMARY ---\n{test_summary}\n\n"
             f"--- PRD ---\n{prd_text[:2000]}\n--- END PRD ---"
         )
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.0,
-            max_tokens=800,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT_REQUIREMENTS},
-                {"role": "user", "content": user_prompt},
+        raw = provider.complete(
+            [
+                Message(role="system", content=_SYSTEM_PROMPT_REQUIREMENTS),
+                Message(role="user", content=user_prompt),
             ],
+            max_tokens=800,
+            temperature=0.0,
+            json_mode=True,
         )
-        raw = response.choices[0].message.content or "{}"
-        data = json.loads(raw)
+        data = json.loads(raw or "{}")
         reqs = data.get("requirements", [])
-        # Validate and clamp
         result = []
         for r in reqs[:10]:
             if isinstance(r, dict) and "requirement" in r:
@@ -150,7 +144,9 @@ def _extract_requirement_coverage(
         return []
 
 
-def analyze_with_ai(report_dict: dict, context: dict, api_key: str) -> dict:
+def analyze_with_ai(report_dict: dict, context: dict, provider: "ChatProvider") -> dict:
+    from app.ai.base import Message
+
     _default = {
         "ai_adjustment": 0,
         "ai_confidence": 0.0,
@@ -158,12 +154,7 @@ def analyze_with_ai(report_dict: dict, context: dict, api_key: str) -> dict:
         "risk_explanations": [],
     }
 
-    if not api_key:
-        return _default
-
     try:
-        from openai import OpenAI
-
         prd_text = (context.get("prd_text") or "").strip() if context else ""
         has_prd = bool(prd_text)
 
@@ -171,22 +162,19 @@ def analyze_with_ai(report_dict: dict, context: dict, api_key: str) -> dict:
         adj_min = -20 if has_prd else -5
         adj_max = 5
 
-        client = OpenAI(api_key=api_key)
         prompt = _build_prompt(report_dict, context or {})
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.1,
-            max_tokens=600,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
+        raw = provider.complete(
+            [
+                Message(role="system", content=system_prompt),
+                Message(role="user", content=prompt),
             ],
+            max_tokens=600,
+            temperature=0.1,
+            json_mode=True,
         )
 
-        raw = response.choices[0].message.content or "{}"
-        data = json.loads(raw)
+        data = json.loads(raw or "{}")
 
         adjustment = int(data.get("adjustment", 0))
         adjustment = max(adj_min, min(adj_max, adjustment))
@@ -199,11 +187,10 @@ def analyze_with_ai(report_dict: dict, context: dict, api_key: str) -> dict:
             ai_confidence=data.get("confidence", 0.0),
         )
 
-        # 7B.4 Requirement traceability — second AI call only when PRD is present
         requirement_coverage: list[dict] = []
         if has_prd:
-            test_summary = prompt[:500]  # concise summary of execution state
-            requirement_coverage = _extract_requirement_coverage(prd_text, test_summary, client)
+            test_summary = prompt[:500]
+            requirement_coverage = _extract_requirement_coverage(prd_text, test_summary, provider)
 
         batch = report_dict.get("batch_summary", {})
         return {
@@ -212,9 +199,7 @@ def analyze_with_ai(report_dict: dict, context: dict, api_key: str) -> dict:
             "ai_insights": list(data.get("insights", [])),
             "risk_explanations": list(data.get("risk_explanations", [])),
             "requirement_coverage": requirement_coverage,
-            # Audit detail — stored on the validation document
             "ai_adjustment_detail": {
-                "model": "gpt-4o-mini",
                 "has_prd": has_prd,
                 "raw_adjustment": int(data.get("adjustment", 0)),
                 "clamped_adjustment": adjustment,

@@ -4,7 +4,7 @@ from fastapi import Depends, HTTPException, Request, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 import structlog
 
-from app.clients import FirebaseClient
+from app.auth.base import AuthProvider
 from app.dependencies import get_db
 from app.models import User, UserRole
 
@@ -28,9 +28,9 @@ async def get_firebase_token(request: Request) -> dict:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    firebase: FirebaseClient = request.app.state.firebase
+    auth: AuthProvider = request.app.state.auth
     try:
-        decoded_token = await firebase.verify_id_token(id_token)
+        decoded_token = await auth.verify_id_token(id_token)
     except Exception as exc:
         logger.warning("auth.token_verification_failed", error=str(exc))
         raise HTTPException(
