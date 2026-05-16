@@ -52,7 +52,7 @@ frontend/.env.production
 *~
 
 # Task tracking (local only)
-tasks/
+/tasks/
 
 # Celery
 celerybeat-schedule
