@@ -3,8 +3,8 @@ FROM python:3.11-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN groupadd --gid 1000 qualora && \
-    useradd --uid 1000 --gid qualora --shell /bin/bash --create-home qualora
+RUN groupadd --gid 1000 cg && \
+    useradd --uid 1000 --gid cg --shell /bin/bash --create-home cg
 
 WORKDIR /app
 
@@ -19,9 +19,9 @@ FROM base AS runtime
 COPY --from=deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
-COPY --chown=qualora:qualora . .
+COPY --chown=cg:cg . .
 
-USER qualora
+USER cg
 
 EXPOSE 8000
 
