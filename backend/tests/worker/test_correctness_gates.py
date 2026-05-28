@@ -370,6 +370,8 @@ class TestFinalScoreGates:
         db.execution_telemetry.find.return_value = []
         db.execution_profiles.find.return_value = []
         db.release_validations.find_one.return_value = None
+        db.projects.find_one.return_value = None
+        db.test_cases.find.return_value = iter([])
 
         # Mock the base score engine to return a passing score
         with patch("app.intelligence.final_score_engine._base_score") as mock_base, \

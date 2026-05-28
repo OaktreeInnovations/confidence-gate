@@ -262,7 +262,7 @@ def execute_intent(
             or (_mutation is not None and _mutation.has_significant_mutations)
         )
         if (
-            (_no_effect_no_repair or (_effect_but_unverified and not _behavior_confirmed_effect))
+            ((_no_effect_no_repair and not _behavior_confirmed_effect) or _effect_but_unverified)
             and result.get("selector_key")
             and in_run_memory is not None
             and action.action in _RESOLUTION_RETRY_ACTIONS

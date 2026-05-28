@@ -59,9 +59,11 @@ _TEMPLATE_RE = _re.compile(r"\$\{(\w+)\}")
 def _builtin_token(key: str) -> str | None:
     """Return a generated value for built-in dynamic tokens, or None if not a built-in."""
     import uuid as _uuid
-    import random as _random
+    import secrets as _secrets
     import string as _string
     from datetime import date as _date
+
+    _charset = _string.ascii_lowercase + _string.digits
 
     if key == "uuid":
         return str(_uuid.uuid4())
@@ -71,14 +73,14 @@ def _builtin_token(key: str) -> str | None:
     if key == "date":
         return _date.today().isoformat()
     if key == "random_int":
-        return str(_random.randint(100000, 999999))
+        return str(_secrets.randbelow(900000) + 100000)
     if key == "random_string":
-        return "".join(_random.choices(_string.ascii_lowercase + _string.digits, k=8))
+        return "".join(_secrets.choice(_charset) for _ in range(8))
     if key == "random_email":
-        suffix = "".join(_random.choices(_string.ascii_lowercase + _string.digits, k=6))
+        suffix = "".join(_secrets.choice(_charset) for _ in range(6))
         return f"test_{suffix}@example.com"
     if key == "random_name":
-        suffix = "".join(_random.choices(_string.ascii_lowercase + _string.digits, k=6))
+        suffix = "".join(_secrets.choice(_charset) for _ in range(6))
         return f"User_{suffix}"
     return None
 
