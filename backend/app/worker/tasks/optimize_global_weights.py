@@ -13,7 +13,7 @@ def optimize_global_weights() -> None:
     """Fit cross-org logistic regression and store learned signal weights."""
     from app.intelligence.global_weight_optimizer import run_global_optimization
 
-    db = sync_mongo.db
+    db = sync_mongo.get_db()
     result = run_global_optimization(db)
     if result:
         logger.info(

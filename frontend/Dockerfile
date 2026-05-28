@@ -11,8 +11,8 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 
 ARG NEXT_PUBLIC_FIREBASE_API_KEY=fake-api-key
-ARG NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=qualora-dev.firebaseapp.com
-ARG NEXT_PUBLIC_FIREBASE_PROJECT_ID=qualora-dev
+ARG NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+ARG NEXT_PUBLIC_FIREBASE_PROJECT_ID=your-project-id
 ARG NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST=http://localhost:9099
 ARG BACKEND_URL=http://localhost:8001
 
@@ -30,14 +30,14 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-RUN addgroup --system --gid 1001 qualora && \
-    adduser --system --uid 1001 qualora
+RUN addgroup --system --gid 1001 cg && \
+    adduser --system --uid 1001 cg
 
 COPY --from=builder /app/public ./public
-COPY --from=builder --chown=qualora:qualora /app/.next/standalone ./
-COPY --from=builder --chown=qualora:qualora /app/.next/static ./.next/static
+COPY --from=builder --chown=cg:cg /app/.next/standalone ./
+COPY --from=builder --chown=cg:cg /app/.next/static ./.next/static
 
-USER qualora
+USER cg
 
 EXPOSE 3000
 ENV PORT=3000

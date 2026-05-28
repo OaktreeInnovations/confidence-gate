@@ -14,7 +14,7 @@ def detect_model_drift_task() -> None:
         from app.clients import sync_mongo
         from app.intelligence.model_drift_detector import detect_model_drift
 
-        db = sync_mongo.db
+        db = sync_mongo.get_db()
         orgs = list(db.orgs.find({}, {"_id": 1}))
         logger.info("detect_model_drift.start", org_count=len(orgs))
 

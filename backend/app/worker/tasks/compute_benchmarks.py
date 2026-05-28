@@ -15,7 +15,7 @@ def compute_benchmarks() -> None:
     """Compute per-org benchmark stats and store in benchmark_stats collection."""
     from app.intelligence.benchmark_engine import compute_org_benchmark, compute_confidence_percentiles
 
-    db = sync_mongo.db
+    db = sync_mongo.get_db()
 
     # Get all distinct org_ids from execution_profiles
     org_ids = db.execution_profiles.distinct("org_id")

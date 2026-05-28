@@ -18,7 +18,7 @@ def check_validation_sla() -> None:
     if settings.validation_sla_minutes <= 0:
         return
 
-    db = sync_mongo.db
+    db = sync_mongo.get_db()
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=settings.validation_sla_minutes)
 
