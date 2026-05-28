@@ -977,7 +977,7 @@ export default function ReleaseDetailPage() {
 
       {/* Delta from previous release */}
       {isCompleted && report?.delta && (
-        <DeltaCard delta={report.delta as any} />
+        <DeltaCard delta={report.delta as { score_delta: number | null; pass_rate_delta: number | null; reasons: string[]; has_previous: boolean }} />
       )}
 
       {/* Anomalies */}

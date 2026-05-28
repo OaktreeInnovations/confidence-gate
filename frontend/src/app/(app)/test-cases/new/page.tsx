@@ -38,6 +38,23 @@ export default function NewTestCasePage() {
   const projectId = searchParams.get("project_id");
   const [project, setProject] = useState<Project | null>(null);
 
+  const [testType, setTestType] = useState<TestType>("ui");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [prerequisites, setPrerequisites] = useState("");
+  const [priority, setPriority] = useState<TestCasePriority>("medium");
+  const [tcStatus, setTcStatus] = useState<TestCaseStatus>("draft");
+  const [tagsInput, setTagsInput] = useState("");
+  const [steps, setSteps] = useState<TestStep[]>([
+    { step_number: 1, action: "", expected: "", api_config: null },
+  ]);
+  const [testData, setTestData] = useState<{ key: string; value: string }[]>([]);
+  const [stepHeaders, setStepHeaders] = useState<{ key: string; value: string }[][]>([[]]);
+  const [stepExtractVars, setStepExtractVars] = useState<{ key: string; value: string }[][]>([[]]);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!projectId) {
       router.push("/projects");
@@ -57,24 +74,6 @@ export default function NewTestCasePage() {
   if (!projectId) {
     return <div className="text-muted-foreground">Redirecting to projects...</div>;
   }
-
-  const [testType, setTestType] = useState<TestType>("ui");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [prerequisites, setPrerequisites] = useState("");
-  const [priority, setPriority] = useState<TestCasePriority>("medium");
-  const [tcStatus, setTcStatus] = useState<TestCaseStatus>("draft");
-  const [tagsInput, setTagsInput] = useState("");
-  const [steps, setSteps] = useState<TestStep[]>([
-    { step_number: 1, action: "", expected: "", api_config: null },
-  ]);
-  const [testData, setTestData] = useState<{ key: string; value: string }[]>([]);
-  // Headers and extract_vars stored as arrays of key-value pairs per step index
-  const [stepHeaders, setStepHeaders] = useState<{ key: string; value: string }[][]>([[]]);
-  const [stepExtractVars, setStepExtractVars] = useState<{ key: string; value: string }[][]>([[]]);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   function addStep() {
     setSteps((prev) => [
